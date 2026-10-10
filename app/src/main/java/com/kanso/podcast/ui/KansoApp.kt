@@ -2,6 +2,10 @@
 
 package com.kanso.podcast.ui
 
+import androidx.compose.ui.draw.alpha
+import android.os.Bundle
+import androidx.media3.session.SessionCommand
+import com.kanso.podcast.data.EpisodeDownloads
 import android.app.DownloadManager
 import android.content.ComponentName
 import android.content.Context
@@ -194,9 +198,9 @@ private enum class EpisodeFilter(val label: String) { Pending("Pendientes"), Fav
         item { Text("AUTOMATIZACIÓN", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary) }
         item { NumberSetting(Icons.Outlined.Download, "Descargas por podcast", if (count == 0) "Desactivadas" else "$count episodios nuevos", count, 0..10) { count = it; persist() } }
         item { ToggleSetting(Icons.Outlined.Inventory2, "Archivar al terminar", archive) { archive = it; persist() } }
-        item { NumberSetting(Icons.Outlined.DeleteSweep, "Borrado automático", "$days días después", days, 1..30) { days = it; persist() } }
+        item { NumberSetting(Icons.Outlined.DeleteSweep, "Borrado automático", if (days == 0) "Nunca" else "$days días después de escucharlo", days, 0..30) { days = it; persist() } }
         item { ToggleSetting(Icons.Outlined.Wifi, "Descargar solo con Wi‑Fi", wifi) { wifi = it; persist() } }
-        item { Text("Kanso revisa tus feeds cada 6 horas. Los favoritos nunca se archivan automáticamente.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.55f)) }
+        item { Text("Kanso revisa tus feeds cada 6 horas. Solo se borran episodios ya escuchados; los favoritos nunca se archivan ni se borran automáticamente.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.55f)) }
         item { Text("BIBLIOTECA", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary) }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { OutlinedButton(onClick = { importLauncher.launch(arrayOf("text/xml", "application/xml", "text/x-opml")) }, Modifier.weight(1f)) { Icon(Icons.Outlined.FileOpen, null); Spacer(Modifier.width(6.dp)); Text("Importar OPML") }; OutlinedButton(onClick = { exportLauncher.launch("kanso-podcasts.opml") }, Modifier.weight(1f), enabled = subscriptions.isNotEmpty()) { Icon(Icons.Outlined.FileUpload, null); Spacer(Modifier.width(6.dp)); Text("Exportar") } } }
         transferMessage?.let { item { Text(it, color = MaterialTheme.colorScheme.secondary) } }
@@ -259,6 +263,7 @@ private fun saveSubscriptions(items: List<PodcastSearchResult>): String = JSONAr
     items.forEach { item -> put(JSONObject().apply { put("id", item.id); put("title", item.title); put("author", item.author); put("feed", item.feedUrl); put("artwork", item.artworkUrl ?: ""); put("genre", item.genre) }) }
 }.toString()
 
+private val SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f, 2.5f, 3f)
 private class PlayerConnection(private val context: Context) {
     var controller: MediaController? = null
     var title by mutableStateOf("")
@@ -277,62 +282,67 @@ private class PlayerConnection(private val context: Context) {
 
     fun play(episode: FeedEpisode, podcastTitle: String) {
         if (controller == null) { pendingEpisode = episode; pendingPodcast = podcastTitle; title = episode.title; podcast = podcastTitle; artwork = episode.artworkUrl; openRequest++; return }
-        val local = File(context.getExternalFilesDir(Environment.DIRECTORY_PODCASTS), "${episode.id.hashCode()}.mp3")
-        val source = if (local.exists() && local.length() > 0) Uri.fromFile(local) else Uri.parse(episode.audioUrl)
-        val item = MediaItem.Builder().setMediaId(episode.id).setUri(source)
-            .setMediaMetadata(MediaMetadata.Builder().setTitle(episode.title).setArtist(podcastTitle).setArtworkUri(episode.artworkUrl?.let(Uri::parse)).build()).build()
+        val item = mediaItemFor(episode, podcastTitle)
         controller?.apply {
             error = null
-            setMediaItem(item)
+            val saved = context.getSharedPreferences("progress", 0).getLong(episode.id, 0L).coerceAtLeast(0L)
+            val existing = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == episode.id }
+            when {
+                existing != null -> seekTo(existing, saved)
+                mediaItemCount == 0 -> setMediaItem(item, saved)
+                else -> { val target = currentMediaItemIndex + 1; addMediaItem(target, item); seekTo(target, saved) }
+            }
             prepare()
-            val saved = context.getSharedPreferences("progress", 0).getLong(episode.id, 0L)
-            if (saved > 0) seekTo(saved)
             playWhenReady = true
         }
-        queue.clear(); queue.add(episode.title)
         episodeId = episode.id; title = episode.title; podcast = podcastTitle; artwork = episode.artworkUrl
         context.getSharedPreferences("now_playing", 0).edit().putString("title", episode.title).putString("podcast", podcastTitle).apply()
         CoroutineScope(Dispatchers.IO).launch { KansoWidget().updateAll(context) }
         openRequest++
     }
+    private fun mediaItemFor(episode: FeedEpisode, podcastTitle: String) = MediaItem.Builder().setMediaId(episode.id).setUri(EpisodeDownloads.playableUri(context, episode))
+        .setMediaMetadata(MediaMetadata.Builder().setTitle(episode.title).setArtist(podcastTitle).setArtworkUri(episode.artworkUrl?.let(Uri::parse)).build()).build()
     fun playPendingIfAny() { val episode = pendingEpisode ?: return; val podcastTitle = pendingPodcast ?: ""; pendingEpisode = null; pendingPodcast = null; play(episode, podcastTitle) }
     fun enqueue(episode: FeedEpisode, podcastTitle: String) {
-        val item = MediaItem.Builder().setMediaId(episode.id).setUri(episode.audioUrl).setMediaMetadata(MediaMetadata.Builder().setTitle(episode.title).setArtist(podcastTitle).setArtworkUri(episode.artworkUrl?.let(Uri::parse)).build()).build()
-        controller?.addMediaItem(item); queue.add(episode.title)
+        val c = controller ?: return
+        if ((0 until c.mediaItemCount).any { c.getMediaItemAt(it).mediaId == episode.id }) return
+        c.addMediaItem(mediaItemFor(episode, podcastTitle))
+        if (c.mediaItemCount == 1) c.prepare()
     }
-    fun removeQueued(displayIndex: Int) { val actual = displayIndex + 1; if (actual in queue.indices) { controller?.removeMediaItem(actual); queue.removeAt(actual) } }
+    /** [displayIndex] is relative to the "Up next" list, i.e. items after the current one. */
+    fun removeQueued(displayIndex: Int) { val c = controller ?: return; val actual = c.currentMediaItemIndex + 1 + displayIndex; if (actual in 0 until c.mediaItemCount) c.removeMediaItem(actual) }
+    var currentIndex by mutableIntStateOf(0)
+    var sleepAt by mutableLongStateOf(0L)
+    var sleepEndOfEpisode by mutableStateOf(false)
+    fun setSleepTimer(minutes: Int) { controller?.sendCustomCommand(SessionCommand(KansoPlaybackService.COMMAND_SLEEP_TIMER, Bundle.EMPTY), Bundle().apply { putInt(KansoPlaybackService.ARG_MINUTES, minutes) }) }
+    fun readSleepExtras(extras: Bundle) { sleepAt = extras.getLong(KansoPlaybackService.EXTRA_SLEEP_AT, 0L); sleepEndOfEpisode = extras.getBoolean(KansoPlaybackService.EXTRA_SLEEP_END_OF_EPISODE, false) }
     fun toggle() { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
     fun seekBy(delta: Long) { controller?.let { it.seekTo((it.currentPosition + delta).coerceAtLeast(0)) } }
-    fun cycleSpeed() { speed = when (speed) { 1f -> 1.25f; 1.25f -> 1.5f; 1.5f -> 2f; else -> 1f }; controller?.setPlaybackSpeed(speed) }
+    fun cycleSpeed() { speed = SPEEDS.firstOrNull { it > speed + 0.01f } ?: SPEEDS.first(); controller?.setPlaybackSpeed(speed) }
 }
 
 @Composable private fun rememberPlayerConnection(): PlayerConnection {
     val context = LocalContext.current
     val connection = remember { PlayerConnection(context) }
     DisposableEffect(Unit) {
-        val future = MediaController.Builder(context, SessionToken(context, ComponentName(context, KansoPlaybackService::class.java))).buildAsync()
+        val future = MediaController.Builder(context, SessionToken(context, ComponentName(context, KansoPlaybackService::class.java)))
+            .setListener(object : MediaController.Listener { override fun onExtrasChanged(controller: MediaController, extras: Bundle) { connection.readSleepExtras(extras) } })
+            .buildAsync()
         future.addListener({ runCatching { future.get() }.onSuccess { localPlayer ->
         connection.controller = localPlayer
-        fun syncQueue() { connection.queue.clear(); for (i in 0 until localPlayer.mediaItemCount) connection.queue.add(localPlayer.getMediaItemAt(i).mediaMetadata.title?.toString().orEmpty()) }
-        syncQueue(); localPlayer.currentMediaItem?.mediaMetadata?.let { metadata -> connection.title = metadata.title?.toString().orEmpty(); connection.podcast = metadata.artist?.toString().orEmpty(); connection.artwork = metadata.artworkUri?.toString() }; connection.episodeId = localPlayer.currentMediaItem?.mediaId.orEmpty(); connection.speed = localPlayer.playbackParameters.speed
+        fun syncQueue() { connection.currentIndex = localPlayer.currentMediaItemIndex.coerceAtLeast(0); connection.queue.clear(); for (i in 0 until localPlayer.mediaItemCount) connection.queue.add(localPlayer.getMediaItemAt(i).mediaMetadata.title?.toString().orEmpty()) }
+        syncQueue(); localPlayer.currentMediaItem?.mediaMetadata?.let { metadata -> connection.title = metadata.title?.toString().orEmpty(); connection.podcast = metadata.artist?.toString().orEmpty(); connection.artwork = metadata.artworkUri?.toString() }; connection.episodeId = localPlayer.currentMediaItem?.mediaId.orEmpty(); connection.speed = localPlayer.playbackParameters.speed; connection.readSleepExtras(localPlayer.sessionExtras)
         connection.playPendingIfAny()
         localPlayer.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) { connection.playing = isPlaying; context.getSharedPreferences("now_playing", 0).edit().putBoolean("is_playing", isPlaying).apply(); CoroutineScope(Dispatchers.IO).launch { KansoWidget().updateAll(context) } }
                     override fun onMediaMetadataChanged(metadata: MediaMetadata) {
-                        connection.title = metadata.title?.toString().orEmpty(); connection.podcast = metadata.artist?.toString().orEmpty(); connection.artwork = metadata.artworkUri?.toString(); connection.episodeId = localPlayer.currentMediaItem?.mediaId.orEmpty()
+                        connection.title = metadata.title?.toString().orEmpty(); connection.podcast = metadata.artist?.toString().orEmpty(); connection.artwork = metadata.artworkUri?.toString(); connection.episodeId = localPlayer.currentMediaItem?.mediaId.orEmpty(); syncQueue()
                     }
                     override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) { syncQueue() }
-                    override fun onPlaybackStateChanged(playbackState: Int) { if (playbackState == Player.STATE_ENDED && connection.episodeId.isNotBlank()) { val prefs = context.getSharedPreferences("episode_state", 0); val listened = prefs.getStringSet("listened", emptySet())!!.toMutableSet().apply { add(connection.episodeId) }; val archived = prefs.getStringSet("archived", emptySet())!!.toMutableSet(); if (context.getSharedPreferences("automation", 0).getBoolean("archive_finished", true) && connection.episodeId !in (prefs.getStringSet("favorites", emptySet()) ?: emptySet())) archived.add(connection.episodeId); prefs.edit().putStringSet("listened", listened).putStringSet("archived", archived).apply() } }
                     override fun onPlayerError(error: PlaybackException) { connection.error = when (error.errorCode) { PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "El servidor rechazó la reproducción."; PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "No hay conexión con el servidor del podcast."; PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED, PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> "Este formato de audio no es compatible."; else -> error.localizedMessage ?: "No se pudo reproducir este episodio." } }
                 })
         } }, ContextCompat.getMainExecutor(context))
         onDispose { MediaController.releaseFuture(future); connection.controller = null }
-    }
-    LaunchedEffect(connection.playing, connection.episodeId) {
-        while (connection.playing && connection.episodeId.isNotBlank()) {
-            delay(5_000)
-            connection.controller?.let { context.getSharedPreferences("progress", 0).edit().putLong(connection.episodeId, it.currentPosition).apply() }
-        }
     }
     LaunchedEffect(Unit) { while (true) { connection.controller?.let { connection.position = it.currentPosition.coerceAtLeast(0); connection.duration = it.duration.coerceAtLeast(0) }; delay(500) } }
     return connection
@@ -342,22 +352,23 @@ private class PlayerConnection(private val context: Context) {
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primary).clickable(onClick = onExpand)) { LinearProgressIndicator(progress = { if (player.duration > 0) player.position.toFloat() / player.duration else 0f }, Modifier.fillMaxWidth().height(3.dp), color = MaterialTheme.colorScheme.secondary, trackColor = MaterialTheme.colorScheme.onPrimary.copy(.15f)); Row(Modifier.fillMaxWidth().heightIn(min = 92.dp).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         if (player.artwork != null) AsyncImage(player.artwork, player.title, Modifier.size(60.dp).clip(RoundedCornerShape(14.dp))) else Box(Modifier.size(60.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.secondary), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.GraphicEq, null, tint = Color.White) }
         Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(player.title, color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis); Text(player.podcast, color = MaterialTheme.colorScheme.onPrimary.copy(.65f), style = MaterialTheme.typography.bodySmall, maxLines = 1) }
-        IconButton(onClick = { player.seekBy(-15_000) }) { Icon(Icons.Outlined.Replay10, "Retroceder", tint = MaterialTheme.colorScheme.onPrimary) }
+        IconButton(onClick = { player.seekBy(-10_000) }) { Icon(Icons.Outlined.Replay10, "Retroceder", tint = MaterialTheme.colorScheme.onPrimary) }
         IconButton(onClick = player::toggle, modifier = Modifier.size(52.dp)) { Icon(if (player.playing) Icons.Default.PauseCircle else Icons.Default.PlayCircle, "Reproducir o pausar", tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(38.dp)) }
     } }
 }
 
 @Composable private fun NowPlayingScreen(player: PlayerConnection, onBack: () -> Unit, modifier: Modifier) {
-    val scope = rememberCoroutineScope(); var timer by remember { mutableStateOf("Temporizador") }; var timerMenu by remember { mutableStateOf(false) }
-    fun setTimer(minutes: Int) { timer = "$minutes min"; timerMenu = false; scope.launch { delay(minutes * 60 * 1000L); player.controller?.pause(); timer = "Temporizador" } }
+    var timerMenu by remember { mutableStateOf(false) }
+    val timer = when { player.sleepEndOfEpisode -> "Fin del episodio"; player.sleepAt > 0 -> "${((player.sleepAt - System.currentTimeMillis()).coerceAtLeast(0) / 60_000) + 1} min"; else -> "Temporizador" }
+    fun setTimer(minutes: Int) { timerMenu = false; player.setSleepTimer(minutes) }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         item { Box(Modifier.fillMaxWidth()) { IconButton(onClick = onBack) { Icon(Icons.Default.KeyboardArrowDown, "Cerrar") }; Text("REPRODUCIENDO", Modifier.align(Alignment.Center), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary) } }
         item { Spacer(Modifier.height(20.dp)); if (player.artwork != null) AsyncImage(player.artwork, player.title, Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(36.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) else Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(36.dp)).background(MaterialTheme.colorScheme.secondary), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.GraphicEq, null, Modifier.size(90.dp), tint = Color.White) } }
         item { Spacer(Modifier.height(28.dp)); Text(player.title, style = MaterialTheme.typography.headlineMedium, maxLines = 2, overflow = TextOverflow.Ellipsis); Text(player.podcast, color = MaterialTheme.colorScheme.onSurface.copy(.55f)); Spacer(Modifier.height(20.dp)); Slider(value = player.position.toFloat(), onValueChange = { player.controller?.seekTo(it.toLong()) }, valueRange = 0f..player.duration.coerceAtLeast(1).toFloat()); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(formatTime(player.position), style = MaterialTheme.typography.labelSmall); Text("−${formatTime((player.duration-player.position).coerceAtLeast(0))}", style = MaterialTheme.typography.labelSmall) } }
         player.error?.let { message -> item { Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.ErrorOutline, null, tint = MaterialTheme.colorScheme.onErrorContainer); Spacer(Modifier.width(10.dp)); Text(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer); TextButton(onClick = { player.controller?.prepare(); player.controller?.playWhenReady = true }) { Text("Reintentar") } } } } }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { player.controller?.seekToPreviousMediaItem() }) { Icon(Icons.Default.SkipPrevious, "Anterior") }; IconButton(onClick = { player.seekBy(-15_000) }) { Icon(Icons.Outlined.Replay10, "Retroceder") }; FilledIconButton(onClick = player::toggle, modifier = Modifier.size(72.dp)) { Icon(if (player.playing) Icons.Default.Pause else Icons.Default.PlayArrow, "Pausa", Modifier.size(36.dp)) }; IconButton(onClick = { player.seekBy(30_000) }) { Icon(Icons.Outlined.Forward30, "Adelantar") }; IconButton(onClick = { player.controller?.seekToNextMediaItem() }) { Icon(Icons.Default.SkipNext, "Siguiente") } } }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { TextButton(onClick = player::cycleSpeed) { Text("${player.speed}×") }; Box { TextButton(onClick = { timerMenu = true }) { Icon(Icons.Outlined.Timer, null); Spacer(Modifier.width(6.dp)); Text(timer) }; DropdownMenu(timerMenu, { timerMenu = false }) { listOf(5, 15, 30, 45, 60).forEach { minutes -> DropdownMenuItem({ Text("$minutes minutos") }, onClick = { setTimer(minutes) }) } } } } }
-        if (player.queue.size > 1) { item { HorizontalDivider(); Text("A continuación", Modifier.fillMaxWidth().padding(top = 20.dp), style = MaterialTheme.typography.titleLarge) }; itemsIndexed(player.queue.drop(1)) { index, title -> Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.DragHandle, null, tint = MaterialTheme.colorScheme.onSurface.copy(.4f)); Spacer(Modifier.width(12.dp)); Text(title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); IconButton(onClick = { player.removeQueued(index) }) { Icon(Icons.Outlined.Close, "Quitar de la cola") } } } }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { player.controller?.seekToPreviousMediaItem() }) { Icon(Icons.Default.SkipPrevious, "Anterior") }; IconButton(onClick = { player.seekBy(-10_000) }) { Icon(Icons.Outlined.Replay10, "Retroceder") }; FilledIconButton(onClick = player::toggle, modifier = Modifier.size(72.dp)) { Icon(if (player.playing) Icons.Default.Pause else Icons.Default.PlayArrow, "Pausa", Modifier.size(36.dp)) }; IconButton(onClick = { player.seekBy(30_000) }) { Icon(Icons.Outlined.Forward30, "Adelantar") }; IconButton(onClick = { player.controller?.seekToNextMediaItem() }) { Icon(Icons.Default.SkipNext, "Siguiente") } } }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { FilledTonalButton(onClick = player::cycleSpeed) { Icon(Icons.Outlined.Speed, null); Spacer(Modifier.width(6.dp)); Text("${"%.1f".format(java.util.Locale.US, player.speed).removeSuffix(".0")}×") }; Box { FilledTonalButton(onClick = { timerMenu = true }) { Icon(Icons.Outlined.Timer, null); Spacer(Modifier.width(6.dp)); Text(timer) }; DropdownMenu(timerMenu, { timerMenu = false }) { listOf(5, 15, 30, 45, 60).forEach { minutes -> DropdownMenuItem({ Text("$minutes minutos") }, onClick = { setTimer(minutes) }) }; DropdownMenuItem({ Text("Al terminar el episodio") }, onClick = { setTimer(KansoPlaybackService.END_OF_EPISODE) }); if (player.sleepAt > 0 || player.sleepEndOfEpisode) DropdownMenuItem({ Text("Cancelar temporizador") }, onClick = { setTimer(0) }) } } } }
+        if (player.queue.size > player.currentIndex + 1) { item { HorizontalDivider(); Text("A continuación", Modifier.fillMaxWidth().padding(top = 20.dp), style = MaterialTheme.typography.titleLarge) }; itemsIndexed(player.queue.drop(player.currentIndex + 1)) { index, title -> Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.DragHandle, null, tint = MaterialTheme.colorScheme.onSurface.copy(.4f)); Spacer(Modifier.width(12.dp)); Text(title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); IconButton(onClick = { player.removeQueued(index) }) { Icon(Icons.Outlined.Close, "Quitar de la cola") } } } }
         item { Spacer(Modifier.height(28.dp)) }
     }
 }
@@ -371,6 +382,9 @@ private fun formatTime(ms: Long): String { val total = ms / 1000; return "%d:%02
     var error by remember { mutableStateOf<String?>(null) }
     val listened = remember { mutableStateListOf<String>().apply { addAll(context.getSharedPreferences("episode_state", 0).getStringSet("listened", emptySet()) ?: emptySet()) } }
     val favorites = remember { mutableStateListOf<String>().apply { addAll(context.getSharedPreferences("episode_state", 0).getStringSet("favorites", emptySet()) ?: emptySet()) } }
+    val archived = remember { mutableStateListOf<String>().apply { addAll(context.getSharedPreferences("episode_state", 0).getStringSet("archived", emptySet()) ?: emptySet()) } }
+    var showArchived by remember { mutableStateOf(false) }
+    val progressPrefs = remember { context.getSharedPreferences("progress", 0) }
     LaunchedEffect(podcast.feedUrl) { runCatching { PodcastDirectory(context).loadEpisodes(podcast) }.onSuccess { feed = it }.onFailure { error = it.message ?: "No pudimos leer los episodios" } }
     if (settings) AlertDialog(onDismissRequest = { settings = false }, title = { Text("Automatización") }, text = { Column { Text(podcast.title, maxLines = 1); Spacer(Modifier.height(14.dp)); Text(if (autoCount == 0) "Descargas automáticas desactivadas" else "Descargar $autoCount episodios nuevos"); Slider(autoCount.toFloat(), { autoCount = it.toInt() }, valueRange = 0f..10f, steps = 9) } }, confirmButton = { TextButton(onClick = { automation.edit().putInt("podcast_count_${podcast.feedUrl.hashCode()}", autoCount).apply(); settings = false }) { Text("Guardar") } }, dismissButton = { TextButton(onClick = { settings = false }) { Text("Cancelar") } })
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -378,37 +392,47 @@ private fun formatTime(ms: Long): String { val total = ms / 1000; return "%d:%02
         item { Text("EPISODIOS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary) }
         if (feed == null && error == null) item { LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.secondary) }
         error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
-        feed?.let { loaded -> if (loaded.episodes.isEmpty()) item { Text("Este feed no contiene episodios reproducibles.") } else items(loaded.episodes, key = { it.id }) { episode ->
-            EpisodeFeedRow(episode, episode.id in listened, episode.id in favorites,
+        feed?.let { loaded ->
+            val archivedCount = loaded.episodes.count { it.id in archived }
+            if (archivedCount > 0) item { TextButton(onClick = { showArchived = !showArchived }) { Icon(Icons.Outlined.Inventory2, null); Spacer(Modifier.width(6.dp)); Text(if (showArchived) "Ocultar archivados" else "Mostrar $archivedCount archivados") } }
+            val visible = if (showArchived) loaded.episodes else loaded.episodes.filter { it.id !in archived }
+            if (loaded.episodes.isEmpty()) item { Text("Este feed no contiene episodios reproducibles.") } else items(visible, key = { it.id }) { episode ->
+            EpisodeFeedRow(episode, episode.id in listened || episode.id in archived, episode.id in favorites, progressPrefs.getLong(episode.id, 0L), player.episodeId == episode.id,
                 onPlay = { player.play(episode, podcast.title) }, onQueue = { player.enqueue(episode, podcast.title) },
-                onListened = { toggleStored(context, "listened", episode.id, listened) },
+                onListened = { toggleStored(context, "listened", episode.id, listened); if (episode.id in archived && episode.id !in listened) toggleStored(context, "archived", episode.id, archived) },
                 onFavorite = { toggleStored(context, "favorites", episode.id, favorites) },
                 onDownload = { downloadEpisode(context, podcast.title, episode) })
         } }
     }
 }
 
-@Composable private fun EpisodeFeedRow(episode: FeedEpisode, listened: Boolean, favorite: Boolean, onPlay: () -> Unit, onQueue: () -> Unit, onListened: () -> Unit, onFavorite: () -> Unit, onDownload: () -> Unit) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(16.dp)) {
-        Row { Column(Modifier.weight(1f)) { Text(episode.title, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface.copy(if (listened) .5f else 1f)); Text("${episode.published} · ${episode.duration}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.55f)) }; FilledIconButton(onClick = onPlay, colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Icon(Icons.Default.PlayArrow, "Reproducir", tint = Color.White) } }
-        if (episode.description.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text(episode.description, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-        Row { IconButton(onClick = onFavorite) { Icon(if (favorite) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder, "Favorito", tint = if (favorite) MaterialTheme.colorScheme.secondary else LocalContentColor.current) }; IconButton(onClick = onListened) { Icon(if (listened) Icons.Default.CheckCircle else Icons.Outlined.CheckCircle, "Escuchado") }; IconButton(onClick = onQueue) { Icon(Icons.Outlined.PlaylistAdd, "Añadir a la cola") }; IconButton(onClick = onDownload) { Icon(Icons.Outlined.Download, "Descargar") } }
+@Composable private fun EpisodeFeedRow(episode: FeedEpisode, listened: Boolean, favorite: Boolean, progressMs: Long, current: Boolean, onPlay: () -> Unit, onQueue: () -> Unit, onListened: () -> Unit, onFavorite: () -> Unit, onDownload: () -> Unit) {
+    val totalMs = parseDurationMs(episode.duration)
+    val fraction = if (totalMs > 0 && progressMs > 0) (progressMs.toFloat() / totalMs).coerceIn(0f, 1f) else 0f
+    val meta = buildString {
+        append(episode.published)
+        when { listened -> append(" · Escuchado"); fraction > 0f -> append(" · Quedan ${formatDuration(totalMs - progressMs)}"); totalMs > 0 -> append(" · ${formatDuration(totalMs)}"); episode.duration != "—" -> append(" · ${episode.duration}") }
+    }
+    Column(Modifier.fillMaxWidth().alpha(if (listened) .6f else 1f).clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(episode.title, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis, color = if (current) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface); Spacer(Modifier.height(2.dp)); Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.55f)) }; Spacer(Modifier.width(12.dp)); FilledIconButton(onClick = onPlay, colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Icon(if (current) Icons.Default.GraphicEq else Icons.Default.PlayArrow, "Reproducir", tint = Color.White) } }
+        if (fraction > 0f && !listened) LinearProgressIndicator(progress = { fraction }, Modifier.fillMaxWidth().padding(top = 10.dp).height(3.dp).clip(RoundedCornerShape(2.dp)), color = MaterialTheme.colorScheme.secondary, trackColor = MaterialTheme.colorScheme.onSurface.copy(.1f))
+        if (episode.description.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text(episode.description, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurface.copy(.75f)) }
+        Row(Modifier.padding(top = 4.dp)) { IconButton(onClick = onFavorite) { Icon(if (favorite) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder, "Favorito", tint = if (favorite) MaterialTheme.colorScheme.secondary else LocalContentColor.current) }; IconButton(onClick = onListened) { Icon(if (listened) Icons.Default.CheckCircle else Icons.Outlined.CheckCircle, "Escuchado") }; IconButton(onClick = onQueue) { Icon(Icons.Outlined.PlaylistAdd, "Añadir a la cola") }; IconButton(onClick = onDownload) { Icon(Icons.Outlined.Download, "Descargar") } }
     }
 }
-
+/** Parses RSS itunes:duration ("HH:MM:SS", "MM:SS" or seconds) into milliseconds; 0 if unknown. */
+private fun parseDurationMs(value: String): Long {
+    val parts = value.trim().split(":").map { it.trim().toLongOrNull() ?: return 0L }
+    if (parts.isEmpty() || parts.size > 3) return 0L
+    return parts.fold(0L) { acc, n -> acc * 60 + n } * 1000
+}
+private fun formatDuration(ms: Long): String { val minutes = (ms / 60_000).coerceAtLeast(1); return if (minutes >= 60) "${minutes / 60} h ${minutes % 60} min" else "$minutes min" }
 private fun toggleStored(context: Context, key: String, id: String, state: MutableList<String>) {
     if (id in state) state.remove(id) else state.add(id)
     context.getSharedPreferences("episode_state", 0).edit().putStringSet(key, state.toSet()).apply()
 }
 
-private fun downloadEpisode(context: Context, podcast: String, episode: FeedEpisode) {
-    val request = DownloadManager.Request(Uri.parse(episode.audioUrl)).setTitle(episode.title).setDescription(podcast)
-        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_PODCASTS, "${episode.id.hashCode()}.mp3")
-        .setAllowedOverMetered(true)
-    (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
-}
-
+private fun downloadEpisode(context: Context, podcast: String, episode: FeedEpisode) { EpisodeDownloads.enqueue(context, episode.id, episode.audioUrl, episode.title, podcast) }
 private data class LocalDownload(val id: Long, val title: String, val status: Int, val uri: String?, val source: String?, val downloaded: Long, val total: Long)
 
 @Composable private fun DownloadsScreen(modifier: Modifier) {
@@ -433,8 +457,7 @@ private fun queryDownloads(context: Context): List<LocalDownload> = runCatching 
 }.getOrDefault(emptyList())
 
 private fun downloadStatus(item: LocalDownload) = when (item.status) { DownloadManager.STATUS_SUCCESSFUL -> "Disponible sin conexión"; DownloadManager.STATUS_FAILED -> "Falló · toca eliminar y vuelve a descargar"; DownloadManager.STATUS_PAUSED -> "En pausa"; DownloadManager.STATUS_PENDING -> "En espera"; else -> if (item.total > 0) "${item.downloaded * 100 / item.total}%" else "Descargando…" }
-private fun retryDownload(context: Context, item: LocalDownload) { val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager; manager.remove(item.id); val request = DownloadManager.Request(Uri.parse(item.source)).setTitle(item.title).setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED).setDestinationInExternalFilesDir(context, Environment.DIRECTORY_PODCASTS, "retry_${item.title.hashCode()}.mp3"); manager.enqueue(request) }
-
+private fun retryDownload(context: Context, item: LocalDownload) { EpisodeDownloads.retry(context, item.id, item.source ?: return, item.title) }
 private fun parseOpml(stream: java.io.InputStream): List<PodcastSearchResult> {
     val parser = Xml.newPullParser().apply { setInput(stream, null) }; val result = mutableListOf<PodcastSearchResult>(); var event = parser.eventType
     while (event != XmlPullParser.END_DOCUMENT) { if (event == XmlPullParser.START_TAG && parser.name.equals("outline", true)) { val feed = parser.getAttributeValue(null, "xmlUrl") ?: parser.getAttributeValue(null, "xmlurl"); if (!feed.isNullOrBlank()) { val title = parser.getAttributeValue(null, "title") ?: parser.getAttributeValue(null, "text") ?: feed; result += PodcastSearchResult(feed.hashCode().toString(), title, "Importado por OPML", feed) } }; event = parser.next() }

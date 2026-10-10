@@ -2,8 +2,6 @@ package com.kanso.podcast.data
 
 import android.app.DownloadManager
 import android.content.Context
-import android.net.Uri
-import android.os.Environment
 import androidx.work.*
 import com.kanso.podcast.model.PodcastSearchResult
 import kotlinx.coroutines.async
@@ -30,34 +28,41 @@ class AutomationWorker(context: Context, params: WorkerParameters) : CoroutineWo
     private suspend fun downloadNewest(podcasts: List<PodcastSearchResult>, count: Int) = coroutineScope {
         val seenPrefs = applicationContext.getSharedPreferences("auto_downloaded", 0)
         val automation = applicationContext.getSharedPreferences("automation", 0)
-        val seen = seenPrefs.getStringSet("urls", emptySet())?.toMutableSet() ?: mutableSetOf()
+        // Ordered (oldest first) so trimming keeps the most recent URLs.
+        val seen = LinkedHashSet<String>().apply {
+            seenPrefs.getString("urls_ordered", null)?.let { raw -> runCatching { JSONArray(raw).let { a -> for (i in 0 until a.length()) add(a.getString(i)) } } }
+            ?: addAll(seenPrefs.getStringSet("urls", emptySet()) ?: emptySet())
+        }
         podcasts.map { podcast -> async {
             val podcastCount = automation.getInt("podcast_count_${podcast.feedUrl.hashCode()}", count)
             PodcastDirectory(applicationContext).loadEpisodes(podcast).episodes.take(podcastCount).forEach { episode ->
-                if (seen.add(episode.audioUrl)) {
-                    val request = DownloadManager.Request(Uri.parse(episode.audioUrl)).setTitle(episode.title).setDescription(podcast.title)
-                        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                        .setDestinationInExternalFilesDir(applicationContext, Environment.DIRECTORY_PODCASTS, "${episode.id.hashCode()}.mp3")
-                    (applicationContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+                if (synchronized(seen) { seen.add(episode.audioUrl) }) {
+                    EpisodeDownloads.enqueue(applicationContext, episode.id, episode.audioUrl, episode.title, podcast.title)
                 }
             }
         } }.awaitAll()
-        seenPrefs.edit().putStringSet("urls", seen.toList().takeLast(500).toSet()).apply()
+        seenPrefs.edit().putString("urls_ordered", JSONArray(seen.toList().takeLast(500)).toString()).remove("urls").apply()
     }
 
+    /** Removes downloads older than [days] only for episodes already played and not marked favorite. 0 = never. */
     private fun deleteExpired(days: Int) {
         if (days <= 0) return
         val manager = applicationContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(days.toLong())
-        val protectedNames = (applicationContext.getSharedPreferences("episode_state", 0).getStringSet("favorites", emptySet()) ?: emptySet()).map { "${it.hashCode()}.mp3" }.toSet()
+        val state = applicationContext.getSharedPreferences("episode_state", 0)
+        val favorites = state.getStringSet("favorites", emptySet()) ?: emptySet()
+        val removable = ((state.getStringSet("listened", emptySet()) ?: emptySet()) - favorites).map { EpisodeDownloads.filePrefix(it) }
+        if (removable.isEmpty()) return
         manager.query(DownloadManager.Query()).use { cursor ->
             val id = cursor.getColumnIndex(DownloadManager.COLUMN_ID)
             val modified = cursor.getColumnIndex(DownloadManager.COLUMN_LAST_MODIFIED_TIMESTAMP)
             val uri = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
-            while (cursor.moveToNext()) if (cursor.getLong(modified) < cutoff && protectedNames.none { cursor.getString(uri)?.endsWith(it) == true }) manager.remove(cursor.getLong(id))
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(uri)?.substringAfterLast('/') ?: continue
+                if (cursor.getLong(modified) < cutoff && removable.any { name.startsWith(it) }) manager.remove(cursor.getLong(id))
+            }
         }
     }
-
     companion object {
         fun schedule(context: Context, wifiOnly: Boolean) {
             val constraints = Constraints.Builder().setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED).build()
