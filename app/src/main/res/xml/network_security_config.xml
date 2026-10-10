@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Kanso uses HTTPS everywhere it controls (Apple Podcasts search, artwork, its own requests).
+  Plain HTTP stays allowed only because many podcast RSS feeds and audio enclosures are still
+  published over http:// and cannot be upgraded by the app. Only system CAs are trusted
+  (user-installed certificates are not), so HTTPS connections cannot be intercepted by a
+  user CA.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

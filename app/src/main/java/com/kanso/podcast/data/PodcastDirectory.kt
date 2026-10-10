@@ -13,17 +13,15 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 
-class PodcastDirectory(private val context: Context? = null) {
+class PodcastDirectory {
     suspend fun search(input: String): List<PodcastSearchResult> = withContext(Dispatchers.IO) {
         val query = input.trim()
         if (query.startsWith("http://") || query.startsWith("https://")) listOf(readFeed(query))
         else searchApple(query)
     }
 
-    suspend fun loadEpisodes(podcast: PodcastSearchResult): PodcastFeed = withContext(Dispatchers.IO) {
-        runCatching { loadEpisodesFromNetwork(podcast).also { saveCache(it) } }.getOrElse { loadCache(podcast) ?: throw it }
-    }
-
+    /** Fetches and parses the feed from the network. Offline fallback is handled by [com.kanso.podcast.data.KansoRepository]. */
+    suspend fun fetchEpisodes(podcast: PodcastSearchResult): PodcastFeed = withContext(Dispatchers.IO) { loadEpisodesFromNetwork(podcast) }
     private fun loadEpisodesFromNetwork(podcast: PodcastSearchResult): PodcastFeed {
         val connection = open(podcast.feedUrl)
         return connection.inputStream.use { stream ->
@@ -52,7 +50,7 @@ class PodcastDirectory(private val context: Context? = null) {
                     XmlPullParser.END_TAG -> if (inItem && (parser.name.equals("item", true) || parser.name.equals("entry", true))) {
                         if (title.isNotBlank() && audio.isNotBlank()) episodes += FeedEpisode(
                             id = guid.ifBlank { audio }, title = title, description = description,
-                            audioUrl = audio, published = friendlyDate(date), duration = duration.ifBlank { "—" }, artworkUrl = image ?: podcast.artworkUrl
+                            audioUrl = audio, published = friendlyDate(date), publishedAt = parseDate(date), duration = duration.ifBlank { "—" }, artworkUrl = image ?: podcast.artworkUrl
                         )
                         inItem = false
                     }
@@ -62,18 +60,6 @@ class PodcastDirectory(private val context: Context? = null) {
             PodcastFeed(podcast, episodes)
         }
     }
-
-    private fun saveCache(feed: PodcastFeed) {
-        val array = org.json.JSONArray()
-        feed.episodes.forEach { e -> array.put(JSONObject().apply { put("id", e.id); put("title", e.title); put("description", e.description); put("audio", e.audioUrl); put("published", e.published); put("duration", e.duration); put("artwork", e.artworkUrl ?: "") }) }
-        context?.getSharedPreferences("feed_cache", 0)?.edit()?.putString("feed_${feed.podcast.feedUrl.hashCode()}", array.toString())?.putLong("updated_${feed.podcast.feedUrl.hashCode()}", System.currentTimeMillis())?.apply()
-    }
-
-    private fun loadCache(podcast: PodcastSearchResult): PodcastFeed? = runCatching {
-        val raw = context?.getSharedPreferences("feed_cache", 0)?.getString("feed_${podcast.feedUrl.hashCode()}", null) ?: return null
-        val array = org.json.JSONArray(raw)
-        PodcastFeed(podcast, List(array.length()) { i -> array.getJSONObject(i).run { FeedEpisode(getString("id"), getString("title"), optString("description"), getString("audio"), optString("published"), optString("duration", "—"), optString("artwork").ifBlank { null }) } })
-    }.getOrNull()
 
     private fun searchApple(query: String): List<PodcastSearchResult> {
         val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
@@ -132,10 +118,22 @@ class PodcastDirectory(private val context: Context? = null) {
 
     private fun get(url: String): String = open(url).inputStream.bufferedReader().use { it.readText() }
     private fun clean(text: String) = text.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim().take(500)
-    private fun friendlyDate(value: String) = value.substringBefore(" +").substringBefore(" GMT").take(22).ifBlank { "Fecha desconocida" }
+    private fun parseDate(value: String): Long {
+        if (value.isBlank()) return 0L
+        val patterns = listOf("EEE, dd MMM yyyy HH:mm:ss Z", "EEE, d MMM yyyy HH:mm:ss Z", "EEE, dd MMM yyyy HH:mm:ss zzz", "EEE, d MMM yyyy HH:mm zzz", "dd MMM yyyy HH:mm:ss Z", "yyyy-MM-dd'T'HH:mm:ssXXX", "yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
+        for (pattern in patterns) runCatching { return java.text.SimpleDateFormat(pattern, java.util.Locale.US).parse(value.trim())!!.time }
+        return 0L
+    }
+    /** Short, localized date for display. */
+    private fun friendlyDate(value: String): String {
+        val millis = parseDate(value)
+        if (millis > 0) return java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale("es", "MX")).format(java.util.Date(millis))
+        return legacyFriendlyDate(value)
+    }
+    private fun legacyFriendlyDate(value: String) = value.substringBefore(" +").substringBefore(" GMT").take(22).ifBlank { "Fecha desconocida" }
     private fun open(url: String) = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
         connectTimeout = 12_000; readTimeout = 15_000; instanceFollowRedirects = true
-        setRequestProperty("User-Agent", "KansoPodcast/0.1.1")
+        setRequestProperty("User-Agent", "KansoPodcast/0.2.0 (Android)")
         if (responseCode !in 200..299) throw IllegalStateException("El servidor respondió $responseCode")
     }
 }
