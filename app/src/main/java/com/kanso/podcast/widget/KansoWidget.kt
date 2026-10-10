@@ -58,7 +58,7 @@ class KansoWidgetReceiver : GlanceAppWidgetReceiver() {
 
 private fun control(context: Context, action: String) {
         val future = MediaController.Builder(context, SessionToken(context, ComponentName(context, KansoPlaybackService::class.java))).buildAsync()
-        future.addListener({ runCatching { future.get() }.onSuccess { player -> when (action) { "toggle" -> if (player.isPlaying) player.pause() else player.play(); "back" -> player.seekTo((player.currentPosition - 15_000).coerceAtLeast(0)); "forward" -> player.seekTo(player.currentPosition + 30_000) }; MediaController.releaseFuture(future) } }, ContextCompat.getMainExecutor(context))
+        future.addListener({ runCatching { future.get() }.onSuccess { player -> when (action) { "toggle" -> if (player.isPlaying) player.pause() else player.play(); "back" -> player.seekTo((player.currentPosition - 10_000).coerceAtLeast(0)); "forward" -> player.seekTo(player.currentPosition + 30_000) }; MediaController.releaseFuture(future) } }, ContextCompat.getMainExecutor(context))
 }
 class ToggleAction : ActionCallback { override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) { control(context, "toggle") } }
 class BackAction : ActionCallback { override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) { control(context, "back") } }
