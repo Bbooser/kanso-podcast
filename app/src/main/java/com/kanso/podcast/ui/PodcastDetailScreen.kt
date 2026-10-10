@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.automirrored.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -29,6 +30,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import com.kanso.podcast.data.db.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -69,10 +75,11 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
     val episodes by vm.episodes.collectAsStateWithLifecycle()
     val subscription by vm.subscription.collectAsStateWithLifecycle()
     val downloaded by vm.downloaded.collectAsStateWithLifecycle()
-    val actions = rememberEpisodeActions()
     val context = LocalContext.current
     var settings by remember { mutableStateOf(false) }
     var showArchived by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<String?>(null) }
+    EpisodeSheetHost(selected, episodes.map { EpisodeRow(it, podcast.title, podcast.artworkUrl, podcast.author) }, player, downloaded, onDismiss = { selected = null }, onOpenPodcast = null)
     if (settings) {
         val global = context.getSharedPreferences("automation", 0).getInt("download_count", 0)
         var count by remember { mutableIntStateOf(subscription?.autoDownloadCount ?: global) }
@@ -83,7 +90,7 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
     }
     val archivedCount = episodes.count { it.archived }
     val visible = if (showArchived) episodes else episodes.filter { !it.archived }
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding), verticalArrangement = Arrangement.spacedBy(Kanso.itemGap)) {
+    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
@@ -110,11 +117,6 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
         if (archivedCount > 0) item {
             TextButton(onClick = { showArchived = !showArchived }) { Icon(Icons.Outlined.Inventory2, null); Spacer(Modifier.width(6.dp)); Text(if (showArchived) "Ocultar archivados" else "Mostrar $archivedCount archivados") }
         }
-        items(visible, key = { it.id }) { e ->
-            EpisodeCard(e, player.episodeId == e.id, e.id in downloaded,
-                onPlay = { player.play(e, podcast.title, podcast.artworkUrl) }, onQueue = { player.enqueue(e, podcast.title, podcast.artworkUrl) },
-                onListened = { actions.toggleListened(e) }, onFavorite = { actions.toggleFavorite(e) },
-                onDownload = { actions.download(e, podcast.title) }, onArchive = { actions.toggleArchived(e) })
-        }
+        episodeRows(visible.map { EpisodeRow(it, podcast.title, podcast.artworkUrl, podcast.author) }, player, downloaded, onSelect = { selected = it }, showArtwork = false)
     }
 }

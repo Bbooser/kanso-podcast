@@ -46,9 +46,9 @@ class KansoWidget : GlanceAppWidget() {
             Text(title, style = TextStyle(color = ColorProvider(Color(0xFFF5F1E8), Color(0xFFF5F1E8)), fontWeight = FontWeight.Bold, fontSize = 16.sp))
             Text(podcast, style = TextStyle(color = ColorProvider(Color(0xFFB9B8AE), Color(0xFFB9B8AE)), fontSize = 12.sp))
         }
-        Text("↶", modifier = GlanceModifier.padding(8.dp).clickable(actionRunCallback<BackAction>()), style = TextStyle(color = ColorProvider(Color(0xFFF5F1E8), Color(0xFFF5F1E8)), fontSize = 22.sp))
+        Text("−30", modifier = GlanceModifier.padding(8.dp).clickable(actionRunCallback<BackAction>()), style = TextStyle(color = ColorProvider(Color(0xFFF5F1E8), Color(0xFFF5F1E8)), fontSize = 22.sp))
         Text(if (playing) "Ⅱ" else "▶", modifier = GlanceModifier.padding(8.dp).clickable(actionRunCallback<ToggleAction>()), style = TextStyle(color = ColorProvider(Color(0xFFCC6B4E), Color(0xFFCC6B4E)), fontSize = 25.sp))
-        Text("↷", modifier = GlanceModifier.padding(8.dp).clickable(actionRunCallback<ForwardAction>()), style = TextStyle(color = ColorProvider(Color(0xFFF5F1E8), Color(0xFFF5F1E8)), fontSize = 22.sp))
+        Text("+30", modifier = GlanceModifier.padding(8.dp).clickable(actionRunCallback<ForwardAction>()), style = TextStyle(color = ColorProvider(Color(0xFFF5F1E8), Color(0xFFF5F1E8)), fontSize = 22.sp))
     }
 }
 
@@ -58,7 +58,7 @@ class KansoWidgetReceiver : GlanceAppWidgetReceiver() {
 
 private fun control(context: Context, action: String) {
         val future = MediaController.Builder(context, SessionToken(context, ComponentName(context, KansoPlaybackService::class.java))).buildAsync()
-        future.addListener({ runCatching { future.get() }.onSuccess { player -> when (action) { "toggle" -> if (player.isPlaying) player.pause() else player.play(); "back" -> player.seekTo((player.currentPosition - 10_000).coerceAtLeast(0)); "forward" -> player.seekTo(player.currentPosition + 30_000) }; MediaController.releaseFuture(future) } }, ContextCompat.getMainExecutor(context))
+        future.addListener({ runCatching { future.get() }.onSuccess { player -> when (action) { "toggle" -> if (player.isPlaying) player.pause() else player.play(); "back" -> player.seekBack(); "forward" -> player.seekForward() }; MediaController.releaseFuture(future) } }, ContextCompat.getMainExecutor(context))
 }
 class ToggleAction : ActionCallback { override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) { control(context, "toggle") } }
 class BackAction : ActionCallback { override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) { control(context, "back") } }

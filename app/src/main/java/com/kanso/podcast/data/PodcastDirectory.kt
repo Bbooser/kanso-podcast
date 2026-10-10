@@ -14,6 +14,7 @@ import java.net.URI
 import java.net.URLEncoder
 
 class PodcastDirectory {
+    companion object { private val TRANSCRIPT_PREFERENCE = listOf("vtt", "srt", "json", "html", "plain") }
     suspend fun search(input: String): List<PodcastSearchResult> = withContext(Dispatchers.IO) {
         val query = input.trim()
         if (query.startsWith("http://") || query.startsWith("https://")) listOf(readFeed(query))
@@ -30,27 +31,40 @@ class PodcastDirectory {
             var inItem = false
             var title = ""; var description = ""; var audio = ""; var guid = ""
             var date = ""; var duration = ""; var image: String? = null
+            var chapters: String? = null; var transcript: String? = null; var transcriptType: String? = null; var transcriptRank = 99
             var event = parser.eventType
             while (event != XmlPullParser.END_DOCUMENT && episodes.size < 100) {
                 when (event) {
                     XmlPullParser.START_TAG -> {
-                        val name = parser.name.lowercase()
-                        if (name == "item" || name == "entry") { inItem = true; title = ""; description = ""; audio = ""; guid = ""; date = ""; duration = ""; image = null }
-                        else if (inItem) when (name) {
-                            "title" -> title = parser.nextText().trim()
+                        // The pull parser is namespace-unaware, so names arrive as "itunes:duration".
+                        val raw = parser.name.lowercase()
+                        val prefix = raw.substringBefore(':', "")
+                        val name = raw.substringAfter(':')
+                        if (prefix.isEmpty() && (name == "item" || name == "entry")) { inItem = true; title = ""; description = ""; audio = ""; guid = ""; date = ""; duration = ""; image = null; chapters = null; transcript = null; transcriptType = null; transcriptRank = 99 }
+                        else if (inItem && prefix == "podcast") when (name) {
+                            "chapters" -> chapters = parser.getAttributeValue(null, "url")
+                            "transcript" -> {
+                                val type = parser.getAttributeValue(null, "type").orEmpty().lowercase()
+                                val rank = TRANSCRIPT_PREFERENCE.indexOfFirst { type.contains(it) }.let { if (it < 0) 50 else it }
+                                if (rank < transcriptRank) { transcriptRank = rank; transcript = parser.getAttributeValue(null, "url"); transcriptType = type }
+                            }
+                        }
+                        else if (inItem && (prefix.isEmpty() || prefix == "itunes" || prefix == "content")) when (name) {
+                            "title" -> if (prefix.isEmpty() || title.isBlank()) title = parser.nextText().trim()
                             "description", "summary" -> if (description.isBlank()) description = clean(parser.nextText())
                             "guid", "id" -> guid = parser.nextText().trim()
                             "pubdate", "published", "updated" -> if (date.isBlank()) date = parser.nextText().trim()
                             "duration" -> duration = parser.nextText().trim()
                             "enclosure" -> audio = parser.getAttributeValue(null, "url") ?: audio
                             "link" -> if (audio.isBlank() && parser.getAttributeValue(null, "rel") == "enclosure") audio = parser.getAttributeValue(null, "href") ?: ""
-                            "image" -> if (parser.prefix == "itunes") image = parser.getAttributeValue(null, "href")
+                            "image" -> if (prefix == "itunes") image = parser.getAttributeValue(null, "href")
                         }
                     }
                     XmlPullParser.END_TAG -> if (inItem && (parser.name.equals("item", true) || parser.name.equals("entry", true))) {
                         if (title.isNotBlank() && audio.isNotBlank()) episodes += FeedEpisode(
                             id = guid.ifBlank { audio }, title = title, description = description,
-                            audioUrl = audio, published = friendlyDate(date), publishedAt = parseDate(date), duration = duration.ifBlank { "—" }, artworkUrl = image ?: podcast.artworkUrl
+                            audioUrl = audio, published = friendlyDate(date), publishedAt = parseDate(date), duration = duration.ifBlank { "—" }, artworkUrl = image ?: podcast.artworkUrl,
+                            chaptersUrl = chapters, transcriptUrl = transcript, transcriptType = transcriptType
                         )
                         inItem = false
                     }
@@ -60,6 +74,29 @@ class PodcastDirectory {
             PodcastFeed(podcast, episodes)
         }
     }
+
+    /** Top podcasts from Apple's charts (optionally for one genre), resolved to RSS feeds via the lookup API. */
+    suspend fun trending(genreId: Int? = null, country: String = "mx", limit: Int = 30): List<PodcastSearchResult> = withContext(Dispatchers.IO) {
+        val genre = genreId?.let { "/genre=$it" }.orEmpty()
+        val entries = JSONObject(get("https://itunes.apple.com/$country/rss/toppodcasts/limit=$limit$genre/json")).getJSONObject("feed").optJSONArray("entry") ?: org.json.JSONArray()
+        val ids = (0 until entries.length()).mapNotNull { i -> entries.getJSONObject(i).optJSONObject("id")?.optJSONObject("attributes")?.optString("im:id")?.takeIf { it.isNotBlank() } }
+        if (ids.isEmpty()) return@withContext emptyList()
+        val results = JSONObject(get("https://itunes.apple.com/lookup?country=$country&id=${ids.joinToString(",")}")).getJSONArray("results")
+        val byId = (0 until results.length()).map { results.getJSONObject(it) }.filter { it.optString("feedUrl").isNotBlank() }.associateBy { it.optLong("collectionId").toString() }
+        ids.mapNotNull { id -> byId[id]?.let(::fromApple) }
+    }
+
+    private fun fromApple(item: JSONObject) = PodcastSearchResult(
+        id = item.optLong("collectionId").toString(),
+        title = item.optString("collectionName", "Podcast"),
+        author = item.optString("artistName", "Autor desconocido"),
+        feedUrl = item.optString("feedUrl"),
+        artworkUrl = item.optString("artworkUrl600").ifBlank { item.optString("artworkUrl100") },
+        genre = item.optString("primaryGenreName", "Podcast")
+    )
+
+    /** Fetches a small text/JSON resource (chapters, transcripts). */
+    suspend fun fetchText(url: String): String = withContext(Dispatchers.IO) { get(url) }
 
     private fun searchApple(query: String): List<PodcastSearchResult> {
         val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
@@ -95,9 +132,9 @@ class PodcastDirectory {
                     val name = parser.name.lowercase()
                     if (name == "channel") insideChannel = true
                     if (insideChannel && title.isBlank() && name == "title") title = parser.nextText().trim()
-                    if (insideChannel && author.isBlank() && name == "author") author = parser.nextText().trim()
-                    if (insideChannel && name == "image" && parser.prefix == "itunes") artwork = parser.getAttributeValue(null, "href")
-                    if (insideChannel && name == "image" && parser.prefix != "itunes" && artwork == null) artwork = readImage(parser)
+                    if (insideChannel && author.isBlank() && (name == "itunes:author" || name == "author")) author = parser.nextText().trim()
+                    if (insideChannel && parser.name.equals("itunes:image", true)) artwork = parser.getAttributeValue(null, "href")
+                    if (insideChannel && name == "image" && artwork == null) artwork = readImage(parser)
                 }
                 if (event == XmlPullParser.END_TAG && parser.name.equals("channel", true)) break
                 event = parser.next()

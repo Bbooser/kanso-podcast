@@ -30,6 +30,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import com.kanso.podcast.data.db.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -46,43 +51,68 @@ import kotlinx.coroutines.launch
 import androidx.activity.compose.BackHandler
 
 private enum class Section(val label: String, val icon: ImageVector) {
-    Library("Biblioteca", Icons.Outlined.GridView), Listen("Escuchar", Icons.Outlined.Headphones), Downloads("Descargas", Icons.Outlined.Download), Profile("Perfil", Icons.Outlined.Person)
+    Podcasts("Podcasts", Icons.Outlined.GridView), Playlists("Playlists", Icons.AutoMirrored.Outlined.FormatListBulleted), Discover("Descubrir", Icons.Outlined.Search),
+    UpNext("A continuación", Icons.AutoMirrored.Outlined.QueueMusic), Profile("Perfil", Icons.Outlined.Person)
 }
 
-/** App shell: bottom navigation, mini player and the overlay screens (search, podcast, now playing). */
+/** Screens stacked on top of a tab; Back pops them in order. */
+private sealed interface Overlay {
+    data class Podcast(val podcast: PodcastSearchResult) : Overlay
+    data class Folder(val name: String) : Overlay
+    data class Playlist(val id: Long) : Overlay
+    data class Page(val page: ProfilePage) : Overlay
+}
+
+/** App shell: five tabs, the floating mini player and stacked detail screens. */
 @Composable fun KansoApp(dark: Boolean, palette: KansoPalette, onDarkChange: (Boolean) -> Unit, onPaletteChange: (KansoPalette) -> Unit) {
-    var section by rememberSaveable { mutableStateOf(Section.Library) }
-    var searching by rememberSaveable { mutableStateOf(false) }
-    var selectedPodcast by remember { mutableStateOf<PodcastSearchResult?>(null) }
+    var section by rememberSaveable { mutableStateOf(Section.Podcasts) }
+    val stack = remember { mutableStateListOf<Overlay>() }
     var showPlayer by rememberSaveable { mutableStateOf(false) }
     val player = rememberPlayerConnection()
     var lastOpen by remember { mutableIntStateOf(0) }
     LaunchedEffect(player.openRequest) { if (player.openRequest > lastOpen) { lastOpen = player.openRequest; showPlayer = true } }
-    BackHandler(enabled = showPlayer || selectedPodcast != null || searching || section != Section.Library) {
-        when { showPlayer -> showPlayer = false; selectedPodcast != null -> selectedPodcast = null; searching -> searching = false; else -> section = Section.Library }
+    fun push(o: Overlay) { stack.add(o) }
+    fun go(s: Section) { stack.clear(); showPlayer = false; section = s }
+    val openPodcast: (PodcastSearchResult) -> Unit = { push(Overlay.Podcast(it)) }
+    BackHandler(enabled = showPlayer || stack.isNotEmpty() || section != Section.Podcasts) {
+        when { showPlayer -> showPlayer = false; stack.isNotEmpty() -> stack.removeAt(stack.lastIndex); else -> section = Section.Podcasts }
     }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            if (!showPlayer) Column {
-                if (player.title.isNotBlank()) MiniPlayer(player, onExpand = { showPlayer = true })
-                if (!searching && selectedPodcast == null) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                    Section.entries.forEach { item -> NavigationBarItem(selected = section == item, onClick = { section = item }, icon = { Icon(item.icon, null) }, label = { Text(item.label) },
-                        colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.secondary.copy(.18f))) }
+            if (!showPlayer) Column(Modifier.background(MaterialTheme.colorScheme.background)) {
+                if (player.title.isNotBlank()) MiniPlayer(player, onExpand = { showPlayer = true }, onQueue = { go(Section.UpNext) })
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                    Section.entries.forEach { item ->
+                        NavigationBarItem(selected = section == item && stack.isEmpty(), onClick = { go(item) }, icon = { Icon(item.icon, null) },
+                            label = { Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) },
+                            colors = NavigationBarItemDefaults.colors(selectedIconColor = MaterialTheme.colorScheme.secondary, selectedTextColor = MaterialTheme.colorScheme.secondary, indicatorColor = MaterialTheme.colorScheme.secondary.copy(.14f)))
+                    }
                 }
             }
         }
     ) { padding ->
         val m = Modifier.padding(padding)
-        when {
-            showPlayer -> NowPlayingScreen(player, onBack = { showPlayer = false }, m)
-            selectedPodcast != null -> PodcastDetailScreen(selectedPodcast!!, player, onBack = { selectedPodcast = null }, m)
-            searching -> SearchScreen(onOpen = { selectedPodcast = it }, onBack = { searching = false }, m)
-            else -> when (section) {
-                Section.Library -> LibraryScreen(onOpen = { selectedPodcast = it }, onSearch = { searching = true }, m)
-                Section.Listen -> ListenScreen(player, onOpenPlayer = { showPlayer = true }, onOpenPodcast = { selectedPodcast = it }, onSearch = { searching = true }, m)
-                Section.Downloads -> DownloadsScreen(m)
-                Section.Profile -> SettingsScreen(dark, palette, onDarkChange, onPaletteChange, m)
+        val pop: () -> Unit = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
+        val top = stack.lastOrNull()
+        if (showPlayer) NowPlayingScreen(player, onBack = { showPlayer = false }, m)
+        else when (top) {
+            is Overlay.Podcast -> PodcastDetailScreen(top.podcast, player, onBack = pop, m)
+            is Overlay.Folder -> PodcastsScreen(player, openPodcast, onOpenFolder = { push(Overlay.Folder(it)) }, onDiscover = { go(Section.Discover) }, m, folder = top.name, onBack = pop)
+            is Overlay.Playlist -> PlaylistDetailScreen(top.id, player, onBack = pop, onOpenPodcast = openPodcast, m)
+            is Overlay.Page -> when (top.page) {
+                ProfilePage.Stats -> StatsScreen(pop, m)
+                ProfilePage.Downloads -> DownloadsScreen(m, onBack = pop)
+                ProfilePage.Bookmarks -> BookmarksScreen(player, pop, m)
+                ProfilePage.Settings -> SettingsScreen(dark, palette, onDarkChange, onPaletteChange, m, onBack = pop)
+                else -> EpisodeCollectionScreen(top.page, player, pop, openPodcast, m)
+            }
+            null -> when (section) {
+                Section.Podcasts -> PodcastsScreen(player, openPodcast, onOpenFolder = { push(Overlay.Folder(it)) }, onDiscover = { go(Section.Discover) }, m)
+                Section.Playlists -> PlaylistsScreen(onOpen = { push(Overlay.Playlist(it)) }, m)
+                Section.Discover -> DiscoverScreen(openPodcast, m)
+                Section.UpNext -> UpNextScreen(player, onOpenPlayer = { showPlayer = true }, onDiscover = { go(Section.Discover) }, m)
+                Section.Profile -> ProfileScreen(onOpen = { push(Overlay.Page(it)) }, m)
             }
         }
     }
