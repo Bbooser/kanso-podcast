@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+build/
+**/build/
+local.properties
+*.iml
+.idea/
+*.log
+hs_err_pid*
+captures/
+externalNativeBuild/
+app/release/
+outputs/
