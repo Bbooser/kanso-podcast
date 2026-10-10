@@ -1,75 +1,35 @@
-# Kanso Podcast 0.1.7.1
-
+# Kanso Podcast 0.2.0
 Una experiencia de podcast serena: menos mantenimiento, más escucha.
 
-## Estado de la primera entrega
+App Android nativa en Kotlin + Jetpack Compose (Material 3), minSdk 26, targetSdk 36.
 
-- App Android nativa en Kotlin + Jetpack Compose.
-- Inicio, episodios recientes, biblioteca, carpetas, descargas y perfil.
-- Ajustes visibles para descarga, archivado y borrado automáticos.
-- `MediaLibraryService` compartido por teléfono y Android Auto.
-- Widget Glance registrado.
-- Media3 Cast incluido para la siguiente conexión a Chromecast.
-- Modelo freemium presentado en producto: Gratis con anuncios y Kanso+.
-- Tema claro y oscuro con paletas Tierra, Bosque, Océano y Ciruela.
-- Búsqueda real por nombre mediante el directorio de Apple Podcasts.
-- Lectura y validación de una URL RSS pegada por el usuario.
-- Suscripciones persistentes visibles en la biblioteca.
-- Lectura de hasta 100 episodios reales por RSS.
-- Reproducción en segundo plano mediante la sesión Media3 compartida.
-- Recuperación local de la posición de escucha.
-- Mini reproductor con pausa y saltos.
-- Favoritos y estado escuchado persistentes.
-- Descargas manuales mediante el gestor de Android.
-- Inicio alimentado únicamente por suscripciones y episodios reales.
-- Carpetas persistentes y movimiento de podcasts entre ellas.
-- Cola de reproducción, velocidad y temporizador de 30 minutos.
-- Automatización periódica de feeds, descargas y limpieza con WorkManager.
-- Reglas configurables reales: cantidad, días de retención, archivado y Wi‑Fi.
-- Widget alimentado por el episodio actual, sin contenido de demostración.
-- Pantalla Now Playing completa con portada, progreso, cola y controles.
-- Podcasts agrupados por carpetas reales directamente en Inicio.
-- Filtros globales de pendientes, favoritos y archivados.
-- Restauración de episodios archivados.
-- Cola editable y temporizador de 5 a 60 minutos.
-- Cantidad de descargas automáticas configurable por podcast.
-- Importación y exportación OPML.
-- Caché offline de feeds con actualización transparente.
-- Reproducción preferente desde archivos descargados.
-- Progreso, cancelación, eliminación y reintento de descargas.
-- Widget interactivo conectado a la sesión multimedia.
-- Catálogo y búsqueda navegables desde Android Auto.
-- Selector Chromecast conservado; transferencia aislada temporalmente del reproductor local hasta validarla con hardware.
-- Hotfix: el servicio local ya no inicializa Cast al comenzar una reproducción.
-- Hotfix crítico: reproducción desacoplada por completo del servicio que causaba el cierre.
-- Now Playing se abre al iniciar un episodio y el mini reproductor usa un diseño ampliado.
-- La pantalla principal es únicamente la biblioteca; se retiró Pendientes.
-- Fuente HTTP de audio con redirecciones y agente de usuario para servidores de podcast.
-- Errores de reproducción visibles y acción para reintentar.
-- Servicio de reproducción estable en segundo plano, sin Auto ni Cast.
-- Restauración del episodio, posición, velocidad y cola después de cerrar.
-- Navegación Atrás jerárquica.
-- Mini reproductor de 92 dp con progreso y retroceso rápido.
-- Descargas accesibles como pestaña principal.
-- Actualización manual de feeds, diagnóstico y permiso de notificaciones.
+## Qué hace hoy
+- **Descubrir**: búsqueda por nombre en el directorio de Apple Podcasts o pegando la URL de un RSS.
+- **Biblioteca**: seguir/dejar de seguir, carpetas, importación y exportación OPML.
+- **Escuchar**: vista con *A continuación* (cola), *En progreso* y *Nuevos* de tus suscripciones, más filtros de Favoritos y Archivados (con restauración).
+- **Episodios**: favorito, escuchado, archivar, añadir a la cola, descargar; barra de progreso y tiempo restante; los escuchados/archivados se atenúan y los archivados se ocultan en el detalle del podcast.
+- **Reproducción** (Media3 / ExoPlayer en un `MediaLibraryService`): segundo plano, notificación, −10 s / +30 s, velocidades 0.8×–3×, temporizador (5–60 min o al terminar el episodio), cola editable, reanudación por episodio y restauración de la sesión al reabrir. Reproduce desde el archivo descargado si existe.
+- **Descargas** con el `DownloadManager` del sistema: progreso, reintento y borrado; respeta “solo Wi‑Fi”.
+- **Automatización** (WorkManager, cada 6 h): actualiza feeds, descarga N episodios nuevos por podcast (global o por podcast) y borra descargas ya escuchadas tras X días (o nunca). Los favoritos nunca se borran.
+- **Android Auto**: navegación de suscripciones y episodios y búsqueda.
+- **Widget** (Glance): episodio actual con reproducir/pausa y saltos.
+- Tema claro/oscuro con paletas Tierra, Bosque, Océano y Ciruela.
 
-## Decisiones de producto
+## Arquitectura
+- `data/db`: Room (`podcasts`, `episodes` con estado y progreso, `queue`, `downloads`, `folders`).
+- `data/KansoRepository`: fuente única de verdad (Flows); `LegacyMigration` importa una sola vez los datos de la versión 0.1.x guardados en SharedPreferences, sin borrarlos.
+- `data/PodcastDirectory`: búsqueda en Apple Podcasts y lector RSS; `data/Opml`; `data/Downloads`; `data/AutomationWorker`.
+- `playback/KansoPlaybackService`: autoridad de reproducción; guarda progreso, marca episodios terminados, persiste la cola y ejecuta el temporizador.
+- `ui/`: una pantalla por archivo con su `ViewModel` (`LibraryScreen`, `ListenScreen`, `PodcastDetailScreen`, `SearchScreen`, `DownloadsScreen`, `SettingsScreen`, `NowPlayingScreen`), `PlayerConnection` (MediaController) y `Components`.
+- Ajustes (apariencia, automatización) siguen en SharedPreferences.
 
-- Una sola aplicación, con dos planes.
-- Las reglas globales se pueden sobrescribir por podcast o carpeta.
-- Favoritos y episodios conservados nunca se eliminan automáticamente.
-- Reproducción local, Android Auto, widget y Cast comparten una sesión.
-- Los anuncios nunca interrumpen un episodio; aparecen solo en superficies de exploración para usuarios gratis.
+## Aún no implementado
+- Chromecast, suscripción Kanso+ y anuncios.
+- Sincronización entre dispositivos, capítulos, transcripciones, recorte de silencios.
+- Tests automatizados.
 
-## Próximas iteraciones
-
-1. Persistencia con Room, importación OPML y lector RSS.
-2. Descargas con WorkManager y motor de reglas de retención.
-3. Conectar cada pantalla al `MediaController` y poblar el catálogo de Android Auto.
-4. Selector Cast y transferencia local/remota conservando posición y cola.
-5. Widget interactivo con play/pausa, avance y episodio actual.
-6. Suscripción Kanso+, anuncios, sincronización y pruebas.
+## Red
+Se permite HTTP en claro (vía `res/xml/network_security_config.xml`) solo porque muchos feeds y audios de podcast siguen publicándose en `http://`; solo se confía en CAs del sistema.
 
 ## Compilar
-
-Abrir `kanso-podcast` en Android Studio (JDK 21, SDK 36) o ejecutar `gradlew assembleDebug` cuando el wrapper esté generado.
+JDK 17+ (probado con 21) y Android SDK 36: `./gradlew assembleDebug`.
