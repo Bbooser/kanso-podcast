@@ -16,7 +16,9 @@ data class FeedEpisode(
     val audioUrl: String,
     val published: String,
     val duration: String,
-    val artworkUrl: String? = null
+    val artworkUrl: String? = null,
+    /** Epoch millis parsed from the feed date, 0 if unknown. */
+    val publishedAt: Long = 0
 )
 
 data class PodcastFeed(val podcast: PodcastSearchResult, val episodes: List<FeedEpisode>)
