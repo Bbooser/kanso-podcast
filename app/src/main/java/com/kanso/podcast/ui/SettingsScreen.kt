@@ -54,7 +54,7 @@ internal class SettingsViewModel(app: android.app.Application) : AndroidViewMode
     suspend fun import(items: List<PodcastSearchResult>) = repo.import(items)
 }
 
-@Composable internal fun SettingsScreen(dark: Boolean, palette: KansoPalette, onDarkChange: (Boolean) -> Unit, onPaletteChange: (KansoPalette) -> Unit, modifier: Modifier, vm: SettingsViewModel = viewModel()) {
+@Composable internal fun SettingsScreen(dark: Boolean, palette: KansoPalette, onDarkChange: (Boolean) -> Unit, onPaletteChange: (KansoPalette) -> Unit, modifier: Modifier, onBack: (() -> Unit)? = null, vm: SettingsViewModel = viewModel()) {
     val context = LocalContext.current; val prefs = remember { context.getSharedPreferences("automation", 0) }
     val scope = rememberCoroutineScope()
     val subscriptions by vm.podcasts.collectAsStateWithLifecycle()
@@ -76,7 +76,7 @@ internal class SettingsViewModel(app: android.app.Application) : AndroidViewMode
     fun persist() { prefs.edit().putInt("download_count", count).putInt("delete_days", days).putBoolean("archive_finished", archive).putBoolean("wifi_only", wifi).apply(); AutomationWorker.schedule(context, wifi) }
     val muted = MaterialTheme.colorScheme.onSurface.copy(.55f)
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { ScreenHeader("Tu espacio", "Automatiza y hazlo tuyo.") }
+        item { ScreenHeader("Ajustes", "Automatiza y hazlo tuyo.", onBack = onBack) }
         item { SectionLabel("Apariencia") }
         item { ToggleSetting(if (dark) Icons.Outlined.DarkMode else Icons.Outlined.LightMode, "Modo oscuro", dark, onDarkChange) }
         item { PalettePicker(palette, onPaletteChange) }

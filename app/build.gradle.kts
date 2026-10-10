@@ -13,8 +13,8 @@ android {
         applicationId = "com.kanso.podcast"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.2.0"
+        versionCode = 14
+        versionName = "0.3.0"
     }
 
     buildFeatures { compose = true; buildConfig = true }
@@ -39,6 +39,9 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.7.1")
     implementation("androidx.media3:media3-session:1.7.1")
     implementation("androidx.media3:media3-ui:1.7.1")
+    implementation("androidx.media3:media3-cast:1.7.1")
+    implementation("androidx.mediarouter:mediarouter:1.7.0")
+    implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.work:work-runtime-ktx:2.10.2")
     implementation("io.coil-kt.coil3:coil-compose:3.2.0")

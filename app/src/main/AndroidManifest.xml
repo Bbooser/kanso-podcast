@@ -41,6 +41,7 @@
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/kanso_widget_info" />
         </receiver>
 
+        <meta-data android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME" android:value="com.kanso.podcast.playback.CastOptionsProvider" />
         <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
     </application>
 </manifest>

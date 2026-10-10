@@ -9,7 +9,7 @@ import androidx.room.Update
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
-private const val ROW = "SELECT e.*, p.title AS podcastTitle, p.artworkUrl AS podcastArtwork FROM episodes e JOIN podcasts p ON p.feedUrl = e.podcastFeedUrl"
+private const val ROW = "SELECT e.*, p.title AS podcastTitle, p.artworkUrl AS podcastArtwork, p.author AS podcastAuthor FROM episodes e JOIN podcasts p ON p.feedUrl = e.podcastFeedUrl"
 private const val ORDER = "ORDER BY e.publishedAt DESC, e.sortIndex ASC"
 
 @Dao
@@ -52,6 +52,31 @@ interface KansoDao {
     @Query("SELECT * FROM pending_state WHERE episodeId IN (:ids)") suspend fun pendingFor(ids: List<String>): List<PendingEpisodeState>
     @Query("DELETE FROM pending_state WHERE episodeId IN (:ids)") suspend fun deletePending(ids: List<String>)
     @Query("UPDATE episodes SET listened = :listened, favorite = :favorite, archived = :archived, progressMs = :progress WHERE id = :id") suspend fun applyState(id: String, listened: Boolean, favorite: Boolean, archived: Boolean, progress: Long)
+
+    @Query("$ROW WHERE e.lastPlayedAt > 0 ORDER BY e.lastPlayedAt DESC LIMIT 200") fun history(): Flow<List<EpisodeRow>>
+    /** Candidate episodes for smart playlists; rules are applied in Kotlin. */
+    @Query("$ROW $ORDER LIMIT 3000") fun allRows(): Flow<List<EpisodeRow>>
+
+    // Playlists
+    @Query("SELECT * FROM playlists ORDER BY sortOrder, id") fun playlists(): Flow<List<PlaylistEntity>>
+    @Query("SELECT * FROM playlists WHERE id = :id") fun playlist(id: Long): Flow<PlaylistEntity?>
+    @Query("SELECT COUNT(*) FROM playlists") suspend fun playlistCount(): Int
+    @Upsert suspend fun upsertPlaylist(item: PlaylistEntity): Long
+    @Query("DELETE FROM playlists WHERE id = :id") suspend fun deletePlaylist(id: Long)
+
+    // Bookmarks
+    @Insert suspend fun insertBookmark(item: BookmarkEntity): Long
+    @Query("DELETE FROM bookmarks WHERE id = :id") suspend fun deleteBookmark(id: Long)
+    @Query("SELECT b.*, e.title AS episodeTitle, p.title AS podcastTitle, COALESCE(e.artworkUrl, p.artworkUrl) AS artwork FROM bookmarks b LEFT JOIN episodes e ON e.id = b.episodeId LEFT JOIN podcasts p ON p.feedUrl = e.podcastFeedUrl ORDER BY b.createdAt DESC")
+    fun bookmarks(): Flow<List<BookmarkRow>>
+    @Query("SELECT * FROM bookmarks WHERE episodeId = :episodeId ORDER BY positionMs") fun bookmarksFor(episodeId: String): Flow<List<BookmarkEntity>>
+
+    // Stats
+    @Query("INSERT OR IGNORE INTO listening_days(day, listenedMs, savedMs) VALUES(:day, 0, 0)") suspend fun ensureDay(day: String)
+    @Query("UPDATE listening_days SET listenedMs = listenedMs + :listened, savedMs = savedMs + :saved WHERE day = :day") suspend fun addToDay(day: String, listened: Long, saved: Long)
+    @Query("SELECT COUNT(*) FROM listening_days WHERE listenedMs >= 60000") fun daysListened(): Flow<Int>
+    @Query("SELECT COALESCE(SUM(savedMs), 0) FROM listening_days") fun totalSavedMs(): Flow<Long>
+    @Query("SELECT COALESCE(SUM(listenedMs), 0) FROM listening_days") fun totalListenedMs(): Flow<Long>
 
     // Queue
     @Query("SELECT * FROM queue ORDER BY position") suspend fun queue(): List<QueueEntry>

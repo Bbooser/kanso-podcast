@@ -48,14 +48,14 @@ import kotlinx.coroutines.delay
 
 private data class LocalDownload(val id: Long, val title: String, val status: Int, val uri: String?, val source: String?, val downloaded: Long, val total: Long)
 
-@Composable internal fun DownloadsScreen(modifier: Modifier) {
+@Composable internal fun DownloadsScreen(modifier: Modifier, onBack: (() -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var downloads by remember { mutableStateOf(queryDownloads(context)) }
     // Light polling while something is in flight, so progress moves without a manual refresh.
     LaunchedEffect(Unit) { while (true) { downloads = queryDownloads(context); delay(if (downloads.any { it.status == DownloadManager.STATUS_RUNNING || it.status == DownloadManager.STATUS_PENDING }) 1_500 else 5_000) } }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding), verticalArrangement = Arrangement.spacedBy(Kanso.itemGap)) {
-        item { ScreenHeader("Descargas", "Tus episodios, listos sin conexión.") { IconButton(onClick = { downloads = queryDownloads(context) }) { Icon(Icons.Outlined.Refresh, "Actualizar") } } }
+        item { ScreenHeader("Descargas", "Tus episodios, listos sin conexión.", onBack = onBack) { IconButton(onClick = { downloads = queryDownloads(context) }) { Icon(Icons.Outlined.Refresh, "Actualizar") } } }
         if (downloads.isEmpty()) item { EmptyState(Icons.Outlined.DownloadForOffline, "Sin descargas", "Descarga episodios desde un podcast o activa las descargas automáticas en Perfil.") }
         items(downloads, key = { it.id }) { d ->
             Row(Modifier.fillMaxWidth().clip(Kanso.card).background(MaterialTheme.colorScheme.surfaceVariant).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {

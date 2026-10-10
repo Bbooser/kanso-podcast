@@ -46,8 +46,13 @@ data class EpisodeEntity(
     val archived: Boolean = false,
     val progressMs: Long = 0,
     val lastPlayedAt: Long = 0,
+    /** Podcasting 2.0 <podcast:chapters> JSON url. */
+    val chaptersUrl: String? = null,
+    /** Podcasting 2.0 <podcast:transcript> url and mime type. */
+    val transcriptUrl: String? = null,
+    val transcriptType: String? = null,
 ) {
-    fun toModel() = FeedEpisode(id, title, description, audioUrl, published, duration, artworkUrl, publishedAt)
+    fun toModel() = FeedEpisode(id, title, description, audioUrl, published, duration, artworkUrl, publishedAt, chaptersUrl, transcriptUrl, transcriptType)
 }
 
 /** Feed-owned columns, used to refresh metadata without touching listener state. */
@@ -62,12 +67,16 @@ data class EpisodeMetadata(
     val duration: String,
     val artworkUrl: String?,
     val sortIndex: Int,
+    val chaptersUrl: String?,
+    val transcriptUrl: String?,
+    val transcriptType: String?,
 )
 
 data class EpisodeRow(
     @Embedded val episode: EpisodeEntity,
     @ColumnInfo(name = "podcastTitle") val podcastTitle: String?,
     @ColumnInfo(name = "podcastArtwork") val podcastArtwork: String?,
+    @ColumnInfo(name = "podcastAuthor") val podcastAuthor: String? = null,
 )
 
 @Entity(tableName = "queue")
@@ -100,4 +109,48 @@ data class PendingEpisodeState(
     val favorite: Boolean,
     val archived: Boolean,
     val progressMs: Long,
+)
+
+/** Smart playlist: episodes from followed podcasts matching all rules. */
+@Entity(tableName = "playlists")
+data class PlaylistEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    /** Feed URLs separated by newlines; empty = all followed podcasts. */
+    val podcastFeeds: String = "",
+    /** ANY, UNPLAYED, IN_PROGRESS, PLAYED, NOT_PLAYED (unplayed or in progress). */
+    val playedState: String = "ANY",
+    val downloadedOnly: Boolean = false,
+    val minMinutes: Int? = null,
+    val maxMinutes: Int? = null,
+    /** Only episodes published in the last N days. */
+    val withinDays: Int? = null,
+    val includeArchived: Boolean = false,
+    val sortOrder: Int = 0,
+) {
+    val feeds: Set<String> get() = podcastFeeds.split('\n').filter { it.isNotBlank() }.toSet()
+}
+
+@Entity(tableName = "bookmarks", indices = [Index("episodeId")])
+data class BookmarkEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val episodeId: String,
+    val positionMs: Long,
+    val title: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+data class BookmarkRow(
+    @Embedded val bookmark: BookmarkEntity,
+    @ColumnInfo(name = "episodeTitle") val episodeTitle: String?,
+    @ColumnInfo(name = "podcastTitle") val podcastTitle: String?,
+    @ColumnInfo(name = "artwork") val artwork: String?,
+)
+
+/** Per-day listening stats; "saved" is time saved by speed and silence trimming. */
+@Entity(tableName = "listening_days")
+data class ListeningDay(
+    @PrimaryKey val day: String,
+    val listenedMs: Long = 0,
+    val savedMs: Long = 0,
 )

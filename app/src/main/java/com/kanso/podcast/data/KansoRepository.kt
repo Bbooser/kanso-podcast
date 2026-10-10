@@ -1,6 +1,7 @@
 package com.kanso.podcast.data
 
 import android.content.Context
+import com.kanso.podcast.data.db.*
 import com.kanso.podcast.data.db.DownloadEntity
 import com.kanso.podcast.data.db.EpisodeEntity
 import com.kanso.podcast.data.db.EpisodeMetadata
@@ -70,9 +71,9 @@ class KansoRepository private constructor(context: Context) {
 
     suspend fun saveFeed(feed: PodcastFeed) = io {
         val url = feed.podcast.feedUrl
-        val entities = feed.episodes.mapIndexed { i, e -> EpisodeEntity(e.id, url, e.title, e.description, e.audioUrl, e.published, e.publishedAt, e.duration, e.artworkUrl, i) }
+        val entities = feed.episodes.mapIndexed { i, e -> EpisodeEntity(e.id, url, e.title, e.description, e.audioUrl, e.published, e.publishedAt, e.duration, e.artworkUrl, i, chaptersUrl = e.chaptersUrl, transcriptUrl = e.transcriptUrl, transcriptType = e.transcriptType) }
         val rowIds = dao.insertEpisodes(entities)
-        dao.updateMetadata(entities.map { EpisodeMetadata(it.id, it.podcastFeedUrl, it.title, it.description, it.audioUrl, it.published, it.publishedAt, it.duration, it.artworkUrl, it.sortIndex) })
+        dao.updateMetadata(entities.map { EpisodeMetadata(it.id, it.podcastFeedUrl, it.title, it.description, it.audioUrl, it.published, it.publishedAt, it.duration, it.artworkUrl, it.sortIndex, it.chaptersUrl, it.transcriptUrl, it.transcriptType) })
         val inserted = entities.filterIndexed { i, _ -> rowIds.getOrNull(i) != -1L }.map { it.id }
         if (inserted.isNotEmpty()) {
             val pending = inserted.chunked(500).flatMap { dao.pendingFor(it) }
@@ -87,6 +88,41 @@ class KansoRepository private constructor(context: Context) {
     suspend fun setFavorite(id: String, value: Boolean) = io { dao.setFavorite(id, value) }
     suspend fun setArchived(id: String, value: Boolean) = io { dao.setArchived(id, value) }
     suspend fun playedNonFavoriteIds() = io { dao.playedNonFavoriteIds() }
+
+    val history: Flow<List<EpisodeRow>> = gated { dao.history() }
+    val allRows: Flow<List<EpisodeRow>> = gated { dao.allRows() }
+
+    // Smart playlists
+    val playlists: Flow<List<PlaylistEntity>> = flow { ready.await(); seedPlaylists(); emitAll(dao.playlists()) }
+    fun playlist(id: Long): Flow<PlaylistEntity?> = gated { dao.playlist(id) }
+    suspend fun savePlaylist(p: PlaylistEntity) = io { dao.upsertPlaylist(p) }
+    suspend fun deletePlaylist(id: Long) = io { dao.deletePlaylist(id) }
+    private suspend fun seedPlaylists() = io {
+        val prefs = app.getSharedPreferences("room_migration", 0)
+        if (prefs.getBoolean("playlists_seeded", false)) return@io
+        if (dao.playlistCount() == 0) {
+            dao.upsertPlaylist(PlaylistEntity(name = "En curso", playedState = "IN_PROGRESS", sortOrder = 0))
+            dao.upsertPlaylist(PlaylistEntity(name = "Nuevos", playedState = "UNPLAYED", withinDays = 14, sortOrder = 1))
+            dao.upsertPlaylist(PlaylistEntity(name = "Para un rato", playedState = "NOT_PLAYED", maxMinutes = 20, sortOrder = 2))
+            dao.upsertPlaylist(PlaylistEntity(name = "Descargados", playedState = "NOT_PLAYED", downloadedOnly = true, sortOrder = 3))
+        }
+        prefs.edit().putBoolean("playlists_seeded", true).apply()
+    }
+
+    // Bookmarks
+    val bookmarks: Flow<List<BookmarkRow>> = gated { dao.bookmarks() }
+    fun bookmarksFor(episodeId: String): Flow<List<BookmarkEntity>> = gated { dao.bookmarksFor(episodeId) }
+    suspend fun addBookmark(episodeId: String, positionMs: Long, title: String) = io { dao.insertBookmark(BookmarkEntity(episodeId = episodeId, positionMs = positionMs, title = title)) }
+    suspend fun deleteBookmark(id: Long) = io { dao.deleteBookmark(id) }
+
+    // Stats
+    val daysListened: Flow<Int> = gated { dao.daysListened() }
+    val totalSavedMs: Flow<Long> = gated { dao.totalSavedMs() }
+    val totalListenedMs: Flow<Long> = gated { dao.totalListenedMs() }
+    suspend fun addListening(listenedMs: Long, savedMs: Long) = io {
+        val day = java.time.LocalDate.now().toString()
+        dao.ensureDay(day); dao.addToDay(day, listenedMs, savedMs)
+    }
 
     // Queue
     suspend fun queue() = io { dao.queue() }
