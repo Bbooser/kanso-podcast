@@ -40,3 +40,12 @@ Se permite HTTP en claro (vía `res/xml/network_security_config.xml`) solo porqu
 
 ## Compilar
 JDK 17+ (probado con 21) y Android SDK 36: `./gradlew assembleDebug`.
+
+## Novedades 0.3.0
+
+- **Importar/exportar** desde Pocket Casts, AntennaPod, Podcast Addict, Overcast y Apple Podcasts (OPML con carpetas, duplicados y esquemas `feed://`/`itpc://`), también compartiendo el archivo a Kanso. El respaldo de base de datos de AntennaPod trae además escuchados, progreso y favoritos.
+- **Avisos de episodios nuevos** por podcast (canal "Episodios nuevos").
+- **Ajustes por podcast:** velocidad, saltar intro y cierre, orden de episodios.
+- **Estadísticas con gráficas:** últimos 7 días, por semana, tiempo ahorrado y podcasts más escuchados.
+- **Almacenamiento:** espacio por podcast, límite en GB y "Borrar escuchados".
+- **Tests y CI:** `./gradlew testDebugUnitTest` (Robolectric) y GitHub Actions que compila el APK debug.

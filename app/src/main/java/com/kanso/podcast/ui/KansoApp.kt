@@ -69,6 +69,10 @@ private sealed interface Overlay {
     val stack = remember { mutableStateListOf<Overlay>() }
     var showPlayer by rememberSaveable { mutableStateOf(false) }
     val player = rememberPlayerConnection()
+    val importer: ImportViewModel = viewModel()
+    val incoming by IncomingImports.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(incoming) { incoming?.let { importer.import(it); IncomingImports.pending.value = null } }
+    ImportDialog(importer)
     var lastOpen by remember { mutableIntStateOf(0) }
     LaunchedEffect(player.openRequest) { if (player.openRequest > lastOpen) { lastOpen = player.openRequest; showPlayer = true } }
     fun push(o: Overlay) { stack.add(o) }

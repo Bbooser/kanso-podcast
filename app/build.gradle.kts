@@ -13,7 +13,7 @@ android {
         applicationId = "com.kanso.podcast"
         minSdk = 26
         targetSdk = 36
-        versionCode = 14
+        versionCode = 15
         versionName = "0.3.0"
     }
 
@@ -24,6 +24,9 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    testOptions { unitTests { isIncludeAndroidResources = true; isReturnDefaultValues = true } }
+    // Room schemas as debug assets so MigrationTestHelper can read them under Robolectric.
+    sourceSets { getByName("debug").assets.srcDir("$projectDir/schemas") }
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
@@ -51,4 +54,11 @@ dependencies {
     implementation("androidx.room:room-ktx:2.7.2")
     ksp("androidx.room:room-compiler:2.7.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.15.1")
+    testImplementation("androidx.test:core-ktx:1.6.1")
+    testImplementation("androidx.test.ext:junit-ktx:1.2.1")
+    testImplementation("androidx.room:room-testing:2.7.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }

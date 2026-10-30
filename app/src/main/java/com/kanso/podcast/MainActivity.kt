@@ -16,6 +16,8 @@ import com.kanso.podcast.data.AutomationWorker
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.kanso.podcast.data.NewEpisodeNotifier.ensureChannel(this)
+        if (savedInstanceState == null) com.kanso.podcast.ui.IncomingImports.accept(intent)
         AutomationWorker.schedule(this, getSharedPreferences("automation", MODE_PRIVATE).getBoolean("wifi_only", true))
         setContent {
             val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -32,5 +34,10 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        com.kanso.podcast.ui.IncomingImports.accept(intent)
     }
 }

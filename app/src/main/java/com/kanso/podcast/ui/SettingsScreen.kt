@@ -51,7 +51,7 @@ import com.kanso.podcast.data.Opml
 internal class SettingsViewModel(app: android.app.Application) : AndroidViewModel(app) {
     private val repo = KansoRepository.get(app)
     val podcasts = repo.podcasts.stateIn(this, emptyList())
-    suspend fun import(items: List<PodcastSearchResult>) = repo.import(items)
+    val entities = repo.podcastEntities.stateIn(this, emptyList())
 }
 
 @Composable internal fun SettingsScreen(dark: Boolean, palette: KansoPalette, onDarkChange: (Boolean) -> Unit, onPaletteChange: (KansoPalette) -> Unit, modifier: Modifier, onBack: (() -> Unit)? = null, vm: SettingsViewModel = viewModel()) {
@@ -60,16 +60,12 @@ internal class SettingsViewModel(app: android.app.Application) : AndroidViewMode
     val subscriptions by vm.podcasts.collectAsStateWithLifecycle()
     var transferMessage by remember { mutableStateOf<String?>(null) }
     var refreshMessage by remember { mutableStateOf<String?>(null) }
-    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let {
-        scope.launch {
-            runCatching { val parsed = context.contentResolver.openInputStream(it)!!.use(Opml::parse); vm.import(parsed) to parsed.size }
-                .onSuccess { (added, total) -> transferMessage = "$added podcasts importados" + if (added < total) " (${total - added} ya estaban)" else "" }
-                .onFailure { transferMessage = "No se pudo leer el archivo OPML" }
-        }
-    } }
+    val importer: ImportViewModel = viewModel()
+    val entities by vm.entities.collectAsStateWithLifecycle()
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(importer::import) }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-opml")) { uri -> uri?.let {
-        runCatching { context.contentResolver.openOutputStream(it)!!.bufferedWriter().use { w -> w.write(Opml.create(subscriptions)) } }
-            .onSuccess { transferMessage = "Biblioteca exportada" }.onFailure { transferMessage = "No se pudo exportar" }
+        runCatching { context.contentResolver.openOutputStream(it)!!.bufferedWriter().use { w -> w.write(Opml.export(entities.map { p -> com.kanso.podcast.data.OpmlEntry(p.feedUrl, p.title, p.folder) })) } }
+            .onSuccess { transferMessage = "Biblioteca exportada (${entities.size} podcasts)" }.onFailure { transferMessage = "No se pudo exportar" }
     } }
     var count by remember { mutableIntStateOf(prefs.getInt("download_count", 0)) }; var days by remember { mutableIntStateOf(prefs.getInt("delete_days", 7)) }
     var archive by remember { mutableStateOf(prefs.getBoolean("archive_finished", true)) }; var wifi by remember { mutableStateOf(prefs.getBoolean("wifi_only", true)) }
@@ -89,11 +85,14 @@ internal class SettingsViewModel(app: android.app.Application) : AndroidViewMode
         item { SectionLabel("Biblioteca") }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = { importLauncher.launch(arrayOf("text/xml", "application/xml", "text/x-opml", "*/*")) }, Modifier.weight(1f)) { Icon(Icons.Outlined.FileOpen, null); Spacer(Modifier.width(6.dp)); Text("Importar OPML") }
+                OutlinedButton(onClick = { importLauncher.launch(arrayOf("*/*")) }, Modifier.weight(1f)) { Icon(Icons.Outlined.FileOpen, null); Spacer(Modifier.width(6.dp)); Text("Importar") }
                 OutlinedButton(onClick = { exportLauncher.launch("kanso-podcasts.opml") }, Modifier.weight(1f), enabled = subscriptions.isNotEmpty()) { Icon(Icons.Outlined.FileUpload, null); Spacer(Modifier.width(6.dp)); Text("Exportar") }
             }
         }
+        item { Text("Importa el OPML exportado desde Pocket Casts, AntennaPod, Podcast Addict, Overcast o Apple Podcasts (se conservan las carpetas), o el respaldo de base de datos de AntennaPod para traer también lo escuchado, el progreso y los favoritos. También puedes compartir el archivo directo a Kanso.", style = MaterialTheme.typography.bodySmall, color = muted) }
         transferMessage?.let { item { Text(it, color = MaterialTheme.colorScheme.secondary) } }
+        item { SectionLabel("Almacenamiento") }
+        item { StorageCard() }
         item { SectionLabel("Mantenimiento") }
         item {
             OutlinedButton(onClick = { androidx.work.WorkManager.getInstance(context).enqueue(androidx.work.OneTimeWorkRequestBuilder<AutomationWorker>().build()); refreshMessage = "Actualización programada" }, Modifier.fillMaxWidth()) {
