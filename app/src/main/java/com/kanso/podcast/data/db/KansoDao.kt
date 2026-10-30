@@ -22,6 +22,13 @@ interface KansoDao {
     @Query("DELETE FROM podcasts WHERE feedUrl = :feedUrl") suspend fun deletePodcast(feedUrl: String)
     @Query("UPDATE podcasts SET folder = :folder WHERE feedUrl = :feedUrl") suspend fun setFolder(feedUrl: String, folder: String?)
     @Query("UPDATE podcasts SET autoDownloadCount = :count WHERE feedUrl = :feedUrl") suspend fun setAutoDownloadCount(feedUrl: String, count: Int?)
+    @Query("UPDATE podcasts SET playbackSpeed = :speed, skipIntroSec = :intro, skipOutroSec = :outro, episodeSort = :sort, notifyNewEpisodes = :notify WHERE feedUrl = :feedUrl")
+    suspend fun setPodcastSettings(feedUrl: String, speed: Float?, intro: Int, outro: Int, sort: String, notify: Boolean)
+    @Query("SELECT * FROM podcasts WHERE feedUrl = :feedUrl") suspend fun podcastOnce(feedUrl: String): PodcastEntity?
+    @Query("SELECT p.* FROM podcasts p JOIN episodes e ON e.podcastFeedUrl = p.feedUrl WHERE e.id = :episodeId") suspend fun podcastForEpisode(episodeId: String): PodcastEntity?
+    @Query("UPDATE podcasts SET title = CASE WHEN title = '' OR title = feedUrl THEN :title ELSE title END, author = CASE WHEN author = '' OR author = :placeholder THEN :author ELSE author END, artworkUrl = COALESCE(artworkUrl, :artwork) WHERE feedUrl = :feedUrl")
+    suspend fun fillPodcastMetadata(feedUrl: String, title: String, author: String, artwork: String?, placeholder: String)
+    @Query("SELECT COUNT(*) FROM episodes WHERE podcastFeedUrl = :feedUrl") suspend fun episodeCount(feedUrl: String): Int
     @Query("SELECT name FROM folders ORDER BY name COLLATE NOCASE") fun folders(): Flow<List<String>>
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertFolders(items: List<FolderEntity>)
 
@@ -53,6 +60,8 @@ interface KansoDao {
     @Query("DELETE FROM pending_state WHERE episodeId IN (:ids)") suspend fun deletePending(ids: List<String>)
     @Query("UPDATE episodes SET listened = :listened, favorite = :favorite, archived = :archived, progressMs = :progress WHERE id = :id") suspend fun applyState(id: String, listened: Boolean, favorite: Boolean, archived: Boolean, progress: Long)
 
+    @Query("SELECT id FROM episodes WHERE id IN (:ids)") suspend fun existingIds(ids: List<String>): List<String>
+    @Query("SELECT id FROM episodes WHERE audioUrl = :audioUrl LIMIT 1") suspend fun idForAudio(audioUrl: String): String?
     @Query("$ROW WHERE e.lastPlayedAt > 0 ORDER BY e.lastPlayedAt DESC LIMIT 200") fun history(): Flow<List<EpisodeRow>>
     /** Candidate episodes for smart playlists; rules are applied in Kotlin. */
     @Query("$ROW $ORDER LIMIT 3000") fun allRows(): Flow<List<EpisodeRow>>
@@ -77,6 +86,11 @@ interface KansoDao {
     @Query("SELECT COUNT(*) FROM listening_days WHERE listenedMs >= 60000") fun daysListened(): Flow<Int>
     @Query("SELECT COALESCE(SUM(savedMs), 0) FROM listening_days") fun totalSavedMs(): Flow<Long>
     @Query("SELECT COALESCE(SUM(listenedMs), 0) FROM listening_days") fun totalListenedMs(): Flow<Long>
+    @Query("SELECT * FROM listening_days WHERE day >= :since ORDER BY day") fun daysSince(since: String): Flow<List<ListeningDay>>
+    @Query("INSERT OR IGNORE INTO podcast_listening(feedUrl, listenedMs) VALUES(:feedUrl, 0)") suspend fun ensurePodcastListening(feedUrl: String)
+    @Query("UPDATE podcast_listening SET listenedMs = listenedMs + :ms WHERE feedUrl = :feedUrl") suspend fun addPodcastListening(feedUrl: String, ms: Long)
+    @Query("SELECT l.feedUrl, p.title, p.artworkUrl, l.listenedMs FROM podcast_listening l LEFT JOIN podcasts p ON p.feedUrl = l.feedUrl WHERE l.listenedMs > 0 ORDER BY l.listenedMs DESC LIMIT :limit")
+    fun topPodcasts(limit: Int): Flow<List<TopPodcastRow>>
 
     // Queue
     @Query("SELECT * FROM queue ORDER BY position") suspend fun queue(): List<QueueEntry>
@@ -91,4 +105,7 @@ interface KansoDao {
     @Query("SELECT * FROM downloads WHERE episodeId = :episodeId") suspend fun downloadFor(episodeId: String): DownloadEntity?
     @Query("DELETE FROM downloads WHERE downloadId = :downloadId") suspend fun deleteDownload(downloadId: Long)
     @Query("SELECT episodeId FROM downloads") fun downloadedIds(): Flow<List<String>>
+    @Query("SELECT d.*, e.podcastFeedUrl AS podcastFeedUrl, p.title AS podcastTitle, e.listened AS listened, e.favorite AS favorite, e.publishedAt AS publishedAt FROM downloads d LEFT JOIN episodes e ON e.id = d.episodeId LEFT JOIN podcasts p ON p.feedUrl = e.podcastFeedUrl")
+    suspend fun downloadRows(): List<DownloadRow>
+    @Query("SELECT * FROM downloads") fun downloadsFlow(): Flow<List<DownloadEntity>>
 }

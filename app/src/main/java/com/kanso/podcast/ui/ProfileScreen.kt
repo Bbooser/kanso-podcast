@@ -61,6 +61,8 @@ internal class ProfileViewModel(app: android.app.Application) : AndroidViewModel
     val days = repo.daysListened.stateIn(this, 0)
     val savedMs = repo.totalSavedMs.stateIn(this, 0L)
     val listenedMs = repo.totalListenedMs.stateIn(this, 0L)
+    val recentDays = repo.daysSince(java.time.LocalDate.now().minusWeeks(9)).stateIn(this, emptyList())
+    val topPodcasts = repo.topPodcasts(5).stateIn(this, emptyList())
     val archived = repo.archived.stateIn(this, emptyList())
     val favorites = repo.favorites.stateIn(this, emptyList())
     val history = repo.history.stateIn(this, emptyList())
@@ -153,6 +155,29 @@ internal class ProfileViewModel(app: android.app.Application) : AndroidViewModel
         item { StatCard(Icons.Outlined.Headphones, "Tiempo escuchado", formatDuration(listened.coerceAtLeast(60_000)).takeIf { listened > 0 } ?: "0 min") }
         item { StatCard(Icons.Outlined.Bolt, "Tiempo ahorrado", if (saved > 0) formatDuration(saved) else "0 min", "Con velocidad y recorte de silencios") }
         item { StatCard(Icons.Outlined.CalendarMonth, "Días con escucha", "$days") }
+        item {
+            val recent by vm.recentDays.collectAsStateWithLifecycle()
+            val today = java.time.LocalDate.now()
+            val daily = com.kanso.podcast.data.StatsMath.daily(recent, today, 7)
+            val dayNames = listOf("L", "M", "M", "J", "V", "S", "D")
+            ChartCard("Últimos 7 días", "${daily.sumOf { it.minutes }} min") { BarChart(daily, { dayNames[it.start.dayOfWeek.value - 1] }) }
+        }
+        item {
+            val recent by vm.recentDays.collectAsStateWithLifecycle()
+            val weekly = com.kanso.podcast.data.StatsMath.weekly(recent, java.time.LocalDate.now(), 8)
+            ChartCard("Por semana", "${weekly.sumOf { it.minutes }} min en 8 semanas") { BarChart(weekly, { "${it.start.dayOfMonth}/${it.start.monthValue}" }) }
+        }
+        item {
+            val recent by vm.recentDays.collectAsStateWithLifecycle()
+            val weekly = com.kanso.podcast.data.StatsMath.weekly(recent, java.time.LocalDate.now(), 8)
+            ChartCard("Tiempo ahorrado", "${weekly.sumOf { it.savedMinutes }} min en 8 semanas") {
+                BarChart(weekly.map { it.copy(minutes = it.savedMinutes) }, { "${it.start.dayOfMonth}/${it.start.monthValue}" })
+            }
+        }
+        item {
+            val top by vm.topPodcasts.collectAsStateWithLifecycle()
+            ChartCard("Más escuchados", "Top 5") { TopPodcastBars(top) }
+        }
     }
 }
 

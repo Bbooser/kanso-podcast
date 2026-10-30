@@ -16,9 +16,14 @@ class AutomationWorker(context: Context, params: WorkerParameters) : CoroutineWo
     override suspend fun doWork(): Result = runCatching {
         val automation = applicationContext.getSharedPreferences("automation", 0)
         val podcasts = repo.podcastList()
-        coroutineScope { podcasts.map { async { repo.refresh(it.toModel()) } }.awaitAll() }
-        downloadNewest(podcasts, automation.getInt("download_count", 0))
+        val fresh = coroutineScope { podcasts.map { p -> async { p to repo.refreshNew(p.toModel()).getOrDefault(emptyList()) } }.awaitAll() }
+        fresh.filter { (p, ids) -> p.notifyNewEpisodes && ids.isNotEmpty() }.forEach { (p, ids) ->
+            val titles = ids.mapNotNull { repo.episode(it) }.sortedByDescending { it.publishedAt }.map { it.title }
+            NewEpisodeNotifier.notify(applicationContext, p.feedUrl, p.title, titles)
+        }
         deleteExpired(automation.getInt("delete_days", 7))
+        val overLimit = KansoStorage.enforceLimit(applicationContext)
+        if (!overLimit) downloadNewest(podcasts, automation.getInt("download_count", 0))
         Result.success()
     }.getOrElse { Result.retry() }
 

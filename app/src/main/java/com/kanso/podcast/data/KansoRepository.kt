@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 /** Single source of truth for library, episodes, queue and downloads, backed by Room. */
+data class ImportSummary(val added: Int, val skipped: Int, val failed: Int, val unreachable: Int = 0)
+
 class KansoRepository private constructor(context: Context) {
     private val app = context.applicationContext
     private val dao = KansoDatabase.get(app).dao()
@@ -48,6 +50,23 @@ class KansoRepository private constructor(context: Context) {
         val fresh = items.filter { it.feedUrl !in existing }
         dao.insertPodcasts(fresh.map { PodcastEntity.from(it) }); fresh.size
     }
+    /** Adds OPML entries (keeping folders), then loads each new feed reporting progress as (done, total). */
+    suspend fun importOpml(doc: OpmlDocument, onProgress: suspend (Int, Int) -> Unit = { _, _ -> }): ImportSummary {
+        val fresh = io {
+            val existing = dao.podcastList().map { Opml.dedupeKey(it.feedUrl) }.toSet()
+            val fresh = doc.entries.filter { Opml.dedupeKey(it.feedUrl) !in existing }
+            dao.insertFolders(fresh.mapNotNull { it.folder?.trim()?.takeIf(String::isNotBlank) }.distinct().map(::FolderEntity))
+            dao.insertPodcasts(fresh.map { PodcastEntity(it.feedUrl, it.feedUrl.hashCode().toString(), it.title, FeedParser.IMPORTED_AUTHOR, null, "Podcast", it.folder?.trim()?.takeIf(String::isNotBlank)) })
+            fresh
+        }
+        var unreachable = 0
+        onProgress(0, fresh.size)
+        fresh.forEachIndexed { i, e ->
+            if (refresh(PodcastSearchResult(e.feedUrl.hashCode().toString(), e.title, FeedParser.IMPORTED_AUTHOR, e.feedUrl)).isFailure) unreachable++
+            onProgress(i + 1, fresh.size)
+        }
+        return ImportSummary(added = fresh.size, skipped = doc.entries.size - fresh.size + doc.duplicates, failed = doc.invalid, unreachable = unreachable)
+    }
     suspend fun createFolder(name: String) = io { dao.insertFolders(listOf(FolderEntity(name.trim()))) }
     suspend fun setFolder(feedUrl: String, folder: String?) = io { dao.setFolder(feedUrl, folder) }
     suspend fun setAutoDownloadCount(feedUrl: String, count: Int?) = io { dao.setAutoDownloadCount(feedUrl, count) }
@@ -67,10 +86,17 @@ class KansoRepository private constructor(context: Context) {
 
     /** Downloads the feed and stores it; on failure the stored episodes stay available offline. */
     suspend fun refresh(podcast: PodcastSearchResult): Result<Int> = runCatching { val feed = directory.fetchEpisodes(podcast); saveFeed(feed); feed.episodes.size }
+    /** Refreshes and returns the ids of episodes that were not stored before (empty on a podcast's first load). */
+    suspend fun refreshNew(podcast: PodcastSearchResult): Result<List<String>> = runCatching {
+        val known = io { dao.episodeCount(podcast.feedUrl) }
+        val inserted = saveFeed(directory.fetchEpisodes(podcast))
+        if (known == 0) emptyList() else inserted
+    }
     suspend fun search(query: String) = directory.search(query)
 
-    suspend fun saveFeed(feed: PodcastFeed) = io {
+    suspend fun saveFeed(feed: PodcastFeed): List<String> = io {
         val url = feed.podcast.feedUrl
+        feed.podcast.let { dao.fillPodcastMetadata(url, it.title, it.author, it.artworkUrl, FeedParser.IMPORTED_AUTHOR) }
         val entities = feed.episodes.mapIndexed { i, e -> EpisodeEntity(e.id, url, e.title, e.description, e.audioUrl, e.published, e.publishedAt, e.duration, e.artworkUrl, i, chaptersUrl = e.chaptersUrl, transcriptUrl = e.transcriptUrl, transcriptType = e.transcriptType) }
         val rowIds = dao.insertEpisodes(entities)
         dao.updateMetadata(entities.map { EpisodeMetadata(it.id, it.podcastFeedUrl, it.title, it.description, it.audioUrl, it.published, it.publishedAt, it.duration, it.artworkUrl, it.sortIndex, it.chaptersUrl, it.transcriptUrl, it.transcriptType) })
@@ -80,6 +106,7 @@ class KansoRepository private constructor(context: Context) {
             pending.forEach { dao.applyState(it.episodeId, it.listened, it.favorite, it.archived, it.progressMs) }
             if (pending.isNotEmpty()) dao.deletePending(pending.map { it.episodeId })
         }
+        inserted
     }
 
     suspend fun setProgress(id: String, ms: Long) = io { dao.setProgress(id, ms, System.currentTimeMillis()) }
@@ -119,9 +146,27 @@ class KansoRepository private constructor(context: Context) {
     val daysListened: Flow<Int> = gated { dao.daysListened() }
     val totalSavedMs: Flow<Long> = gated { dao.totalSavedMs() }
     val totalListenedMs: Flow<Long> = gated { dao.totalListenedMs() }
-    suspend fun addListening(listenedMs: Long, savedMs: Long) = io {
+    suspend fun addListening(listenedMs: Long, savedMs: Long, feedUrl: String? = null) = io {
         val day = java.time.LocalDate.now().toString()
         dao.ensureDay(day); dao.addToDay(day, listenedMs, savedMs)
+        if (feedUrl != null && listenedMs > 0) { dao.ensurePodcastListening(feedUrl); dao.addPodcastListening(feedUrl, listenedMs) }
+    }
+    fun daysSince(since: java.time.LocalDate): Flow<List<ListeningDay>> = gated { dao.daysSince(since.toString()) }
+    fun topPodcasts(limit: Int = 5): Flow<List<TopPodcastRow>> = gated { dao.topPodcasts(limit) }
+
+    // Per-podcast settings
+    suspend fun podcastForEpisode(episodeId: String) = io { dao.podcastForEpisode(episodeId) }
+    suspend fun podcastOnce(feedUrl: String) = io { dao.podcastOnce(feedUrl) }
+    suspend fun savePodcastSettings(feedUrl: String, speed: Float?, intro: Int, outro: Int, sort: String, notify: Boolean) =
+        io { dao.setPodcastSettings(feedUrl, speed, intro.coerceAtLeast(0), outro.coerceAtLeast(0), sort, notify) }
+
+    // Listening state imported from other apps
+    /** Applies state to stored episodes now and parks the rest until their feed is loaded. Returns how many episodes changed. */
+    suspend fun applyImportedState(states: List<PendingEpisodeState>): Int = io {
+        val existing = states.map { it.episodeId }.chunked(500).flatMap { dao.existingIds(it) }.toSet()
+        states.filter { it.episodeId in existing }.forEach { dao.applyState(it.episodeId, it.listened, it.favorite, it.archived, it.progressMs) }
+        dao.insertPending(states.filter { it.episodeId !in existing })
+        states.size
     }
 
     // Queue
@@ -132,6 +177,8 @@ class KansoRepository private constructor(context: Context) {
     suspend fun recordDownload(item: DownloadEntity) = io { dao.upsertDownload(item) }
     suspend fun downloadById(id: Long) = io { dao.downloadById(id) }
     suspend fun removeDownload(id: Long) = io { dao.deleteDownload(id) }
+    suspend fun downloadRows() = io { dao.downloadRows() }
+    val downloadsFlow: Flow<List<DownloadEntity>> = gated { dao.downloadsFlow() }
 
     companion object {
         @Volatile private var instance: KansoRepository? = null

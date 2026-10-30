@@ -8,9 +8,9 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [PodcastEntity::class, EpisodeEntity::class, QueueEntry::class, DownloadEntity::class, FolderEntity::class, PendingEpisodeState::class,
-        PlaylistEntity::class, BookmarkEntity::class, ListeningDay::class],
-    version = 2,
-    autoMigrations = [AutoMigration(from = 1, to = 2)],
+        PlaylistEntity::class, BookmarkEntity::class, ListeningDay::class, PodcastListening::class],
+    version = 3,
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
     exportSchema = true,
 )
 abstract class KansoDatabase : RoomDatabase() {

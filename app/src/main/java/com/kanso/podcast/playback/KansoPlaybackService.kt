@@ -66,7 +66,7 @@ class KansoPlaybackService : MediaLibraryService() {
     private var pendingListened = 0L; private var pendingSaved = 0L
     private val progressRunnable = object : Runnable {
         override fun run() {
-            trackStats()
+            trackStats(); checkOutro()
             if (++tickCount % 5 == 0) saveEpisodeProgress()
             if (tickCount % 15 == 0) flushStats()
             if (active.isPlaying) handler.postDelayed(this, TICK_MS)
@@ -82,14 +82,49 @@ class KansoPlaybackService : MediaLibraryService() {
     private fun flushStats() {
         if (pendingListened == 0L && pendingSaved == 0L) return
         val l = pendingListened; val sv = pendingSaved; pendingListened = 0; pendingSaved = 0
-        scope.launch { repo.addListening(l, sv) }
+        val id = lastTickId
+        scope.launch { repo.addListening(l, sv, id?.let { repo.podcastForEpisode(it)?.feedUrl }) }
+    }
+
+    // --- Per-podcast settings: speed, skip intro and outro ----------------------------------
+    private var outroMs = 0L
+    private var outroHandledFor: String? = null
+    /** Speed the listener had before a podcast override, restored on podcasts without one. */
+    private var speedBeforeOverride: Float? = null
+    private fun applyPodcastSettings(episodeId: String?) {
+        outroMs = 0; outroHandledFor = null
+        if (episodeId == null) return
+        scope.launch {
+            val podcast = repo.podcastForEpisode(episodeId)
+            if (active.currentMediaItem?.mediaId != episodeId) return@launch
+            val override = podcast?.playbackSpeed
+            if (override != null) {
+                if (speedBeforeOverride == null) speedBeforeOverride = active.playbackParameters.speed
+                active.setPlaybackSpeed(override)
+            } else speedBeforeOverride?.let { active.setPlaybackSpeed(it); speedBeforeOverride = null }
+            outroMs = (podcast?.skipOutroSec ?: 0) * 1000L
+            val introMs = (podcast?.skipIntroSec ?: 0) * 1000L
+            val stored = repo.episode(episodeId)?.progressMs ?: 0L
+            if (introMs > 0 && stored == 0L && active.currentPosition < introMs) active.seekTo(introMs)
+        }
+    }
+    private fun checkOutro() {
+        if (outroMs <= 0) return
+        val p = active; val id = p.currentMediaItem?.mediaId ?: return
+        val duration = p.duration
+        if (duration == C.TIME_UNSET || duration <= outroMs * 2 || outroHandledFor == id) return
+        if (p.currentPosition >= duration - outroMs) {
+            outroHandledFor = id
+            markFinished(id)
+            if (p.hasNextMediaItem()) p.seekToNextMediaItem() else p.seekTo(duration)
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
         repo = KansoRepository.get(this)
         val http = DefaultHttpDataSource.Factory()
-            .setUserAgent("KansoPodcast/0.2.0 (Android)")
+            .setUserAgent("KansoPodcast/0.3.0 (Android)")
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(30_000)
@@ -125,6 +160,7 @@ class KansoPlaybackService : MediaLibraryService() {
                 val previous = currentEpisodeId
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && previous != null) markFinished(previous)
                 currentEpisodeId = mediaItem?.mediaId
+                applyPodcastSettings(mediaItem?.mediaId)
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && player.pauseAtEndOfMediaItems) clearSleepTimer()
             }
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -191,7 +227,7 @@ class KansoPlaybackService : MediaLibraryService() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         trackStats(); val l = pendingListened; val sv = pendingSaved
-        if (l > 0) runBlocking { repo.addListening(l, sv) }
+        if (l > 0) runBlocking { repo.addListening(l, sv, lastTickId?.let { repo.podcastForEpisode(it)?.feedUrl }) }
         if (session.player !== player) { session.player = player }
         castPlayer?.setSessionAvailabilityListener(null); castPlayer?.release()
         runCatching { loudness?.release() }

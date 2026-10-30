@@ -21,6 +21,13 @@ data class PodcastEntity(
     /** null = use the global automation setting. */
     val autoDownloadCount: Int? = null,
     val subscribedAt: Long = System.currentTimeMillis(),
+    /** null = use the player's current speed. */
+    @ColumnInfo(defaultValue = "NULL") val playbackSpeed: Float? = null,
+    @ColumnInfo(defaultValue = "0") val skipIntroSec: Int = 0,
+    @ColumnInfo(defaultValue = "0") val skipOutroSec: Int = 0,
+    /** NEWEST or OLDEST. */
+    @ColumnInfo(defaultValue = "NEWEST") val episodeSort: String = "NEWEST",
+    @ColumnInfo(defaultValue = "0") val notifyNewEpisodes: Boolean = false,
 ) {
     fun toModel() = PodcastSearchResult(id, title, author, feedUrl, artworkUrl, genre)
     companion object {
@@ -153,4 +160,23 @@ data class ListeningDay(
     @PrimaryKey val day: String,
     val listenedMs: Long = 0,
     val savedMs: Long = 0,
+)
+
+/** Total listening time per podcast, for the "top podcasts" chart. */
+@Entity(tableName = "podcast_listening")
+data class PodcastListening(
+    @PrimaryKey val feedUrl: String,
+    val listenedMs: Long = 0,
+)
+
+data class TopPodcastRow(val feedUrl: String, val title: String?, val artworkUrl: String?, val listenedMs: Long)
+
+/** A finished download joined with its podcast, for storage management. */
+data class DownloadRow(
+    @Embedded val download: DownloadEntity,
+    @ColumnInfo(name = "podcastFeedUrl") val podcastFeedUrl: String?,
+    @ColumnInfo(name = "podcastTitle") val podcastTitle: String?,
+    @ColumnInfo(name = "listened") val listened: Boolean?,
+    @ColumnInfo(name = "favorite") val favorite: Boolean?,
+    @ColumnInfo(name = "publishedAt") val publishedAt: Long?,
 )
