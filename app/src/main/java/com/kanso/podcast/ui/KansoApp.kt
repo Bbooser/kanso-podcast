@@ -61,6 +61,7 @@ private sealed interface Overlay {
     data class Folder(val name: String) : Overlay
     data class Playlist(val id: Long) : Overlay
     data class Page(val page: ProfilePage) : Overlay
+    data object Search : Overlay
 }
 
 /** App shell: five tabs, the floating mini player and stacked detail screens. */
@@ -102,7 +103,8 @@ private sealed interface Overlay {
         if (showPlayer) NowPlayingScreen(player, onBack = { showPlayer = false }, m)
         else when (top) {
             is Overlay.Podcast -> PodcastDetailScreen(top.podcast, player, onBack = pop, m)
-            is Overlay.Folder -> PodcastsScreen(player, openPodcast, onOpenFolder = { push(Overlay.Folder(it)) }, onDiscover = { go(Section.Discover) }, m, folder = top.name, onBack = pop)
+            is Overlay.Folder -> PodcastsScreen(player, openPodcast, onOpenFolder = { push(Overlay.Folder(it)) }, onDiscover = { go(Section.Discover) }, m, folder = top.name, onBack = pop, onSearch = { push(Overlay.Search) })
+            Overlay.Search -> LibrarySearchScreen(player, onBack = pop, onOpenPodcast = openPodcast, onDiscover = { go(Section.Discover) }, m)
             is Overlay.Playlist -> PlaylistDetailScreen(top.id, player, onBack = pop, onOpenPodcast = openPodcast, m)
             is Overlay.Page -> when (top.page) {
                 ProfilePage.Stats -> StatsScreen(pop, m)
@@ -112,7 +114,7 @@ private sealed interface Overlay {
                 else -> EpisodeCollectionScreen(top.page, player, pop, openPodcast, m)
             }
             null -> when (section) {
-                Section.Podcasts -> PodcastsScreen(player, openPodcast, onOpenFolder = { push(Overlay.Folder(it)) }, onDiscover = { go(Section.Discover) }, m)
+                Section.Podcasts -> PodcastsScreen(player, openPodcast, onOpenFolder = { push(Overlay.Folder(it)) }, onDiscover = { go(Section.Discover) }, m, onSearch = { push(Overlay.Search) })
                 Section.Playlists -> PlaylistsScreen(onOpen = { push(Overlay.Playlist(it)) }, m)
                 Section.Discover -> DiscoverScreen(openPodcast, m)
                 Section.UpNext -> UpNextScreen(player, onOpenPlayer = { showPlayer = true }, onDiscover = { go(Section.Discover) }, m)

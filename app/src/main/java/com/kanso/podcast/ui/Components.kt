@@ -184,7 +184,7 @@ internal fun remainingMs(e: EpisodeEntity): Long { val total = parseDurationMs(e
             if (onOpenPodcast != null) item {
                 TextButton(onClick = { onDismiss(); onOpenPodcast(PodcastSearchResult(e.podcastFeedUrl, title, row.podcastAuthor.orEmpty(), e.podcastFeedUrl, row.podcastArtwork)) }) { Icon(Icons.Outlined.Podcasts, null); Spacer(Modifier.width(6.dp)); Text("Ir al podcast") }
             }
-            if (e.description.isNotBlank()) item { HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.3f)); Spacer(Modifier.height(4.dp)); Text(e.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(.8f)) }
+            if (e.description.isNotBlank()) item { HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.3f)); Spacer(Modifier.height(4.dp)); ShowNotes(e, player, title, row.podcastArtwork) }
         }
     }
 }

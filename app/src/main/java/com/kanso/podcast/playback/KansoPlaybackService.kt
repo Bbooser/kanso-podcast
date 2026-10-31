@@ -124,7 +124,7 @@ class KansoPlaybackService : MediaLibraryService() {
         super.onCreate()
         repo = KansoRepository.get(this)
         val http = DefaultHttpDataSource.Factory()
-            .setUserAgent("KansoPodcast/0.3.0 (Android)")
+            .setUserAgent("KansoPodcast/0.4.0 (Android)")
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(30_000)
@@ -312,6 +312,23 @@ class KansoPlaybackService : MediaLibraryService() {
         }
         currentEpisodeId = player.currentMediaItem?.mediaId
         restored = true
+        scope.launch { repo.autoQueuePending().collect { if (it.isNotEmpty()) consumeAutoQueue(it) } }
+    }
+
+    /** Adds episodes found by the refresh worker: no duplicates, never archived or played ones. */
+    private suspend fun consumeAutoQueue(pending: List<com.kanso.podcast.data.db.AutoQueuePending>) {
+        val rows = pending.associate { it.episodeId to repo.episodeRow(it.episodeId) }
+        val queued = (0 until active.mediaItemCount).map { active.getMediaItemAt(it).mediaId }
+        val plan = com.kanso.podcast.data.planAutoQueue(queued, pending.map { rows[it.episodeId]?.episode to it.atStart })
+        fun item(id: String) = rows[id]!!.let { episodeItem(it.episode, it.podcastTitle, it.podcastArtwork) }
+        if (!plan.isEmpty) {
+            val wasEmpty = active.mediaItemCount == 0
+            val at = if (wasEmpty) 0 else active.currentMediaItemIndex + 1
+            active.addMediaItems(at, plan.next.map(::item))
+            active.addMediaItems(active.mediaItemCount, plan.last.map(::item))
+            if (wasEmpty) active.prepare()
+        }
+        repo.clearAutoQueue(pending.map { it.episodeId })
     }
 
     private fun episodeItem(e: EpisodeEntity, podcastTitle: String?, podcastArtwork: String?): MediaItem =

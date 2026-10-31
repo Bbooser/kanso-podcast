@@ -105,7 +105,7 @@ class PodcastDirectory {
     private fun get(url: String): String = open(url).inputStream.bufferedReader().use { it.readText() }
     private fun open(url: String) = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
         connectTimeout = 12_000; readTimeout = 15_000; instanceFollowRedirects = true
-        setRequestProperty("User-Agent", "KansoPodcast/0.3.0 (Android)")
+        setRequestProperty("User-Agent", "KansoPodcast/0.4.0 (Android)")
         if (responseCode !in 200..299) throw IllegalStateException("El servidor respondió $responseCode")
     }
 }

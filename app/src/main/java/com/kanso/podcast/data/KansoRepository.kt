@@ -29,6 +29,7 @@ class KansoRepository private constructor(context: Context) {
     private val app = context.applicationContext
     private val dao = KansoDatabase.get(app).dao()
     private val directory = PodcastDirectory()
+    val backups by lazy { BackupManager(app, dao) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** The one-time SharedPreferences import runs before anything reads the database. */
     private val ready = scope.async { LegacyMigration.runIfNeeded(app, dao) }
@@ -44,6 +45,11 @@ class KansoRepository private constructor(context: Context) {
     val podcastLibraryStats: Flow<List<com.kanso.podcast.data.db.PodcastLibraryStat>> = gated { dao.podcastLibraryStats() }
     suspend fun setPodcastFavorite(feedUrl: String, value: Boolean) = io { dao.setPodcastFavorite(feedUrl, value) }
     suspend fun setPodcastAutoArchive(feedUrl: String, value: Boolean?) = io { dao.setPodcastAutoArchive(feedUrl, value) }
+    suspend fun setPodcastAutoQueue(feedUrl: String, value: String?) = io { dao.setPodcastAutoQueue(feedUrl, value) }
+    suspend fun addAutoQueue(items: List<com.kanso.podcast.data.db.AutoQueuePending>) = io { dao.insertAutoQueue(items) }
+    fun autoQueuePending() = dao.autoQueuePendingFlow()
+    suspend fun clearAutoQueue(ids: List<String>) = io { dao.deleteAutoQueue(ids) }
+    suspend fun searchLibrary(text: String) = LibrarySearch.ftsQuery(text)?.let { q -> io { dao.searchLibrary(q) } } ?: emptyList()
     fun podcast(feedUrl: String): Flow<PodcastEntity?> = gated { dao.podcast(feedUrl) }
     suspend fun podcastList() = io { dao.podcastList() }
     suspend fun subscribe(podcast: PodcastSearchResult) = io { dao.insertPodcasts(listOf(PodcastEntity.from(podcast))) }

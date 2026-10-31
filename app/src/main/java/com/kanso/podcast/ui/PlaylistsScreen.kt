@@ -1,6 +1,9 @@
 @file:androidx.media3.common.util.UnstableApi
 package com.kanso.podcast.ui
 
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import kotlin.math.roundToInt
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -162,7 +165,7 @@ private fun playlistSummary(rows: List<EpisodeRow>): String {
     var p by remember { mutableStateOf(initial) }
     var pickPodcasts by remember { mutableStateOf(false) }
     val durations = listOf<Triple<String, Int?, Int?>>(Triple("Cualquiera", null, null), Triple("< 20 min", null, 20), Triple("20–60 min", 20, 60), Triple("> 60 min", 60, null))
-    val dates = listOf<Pair<String, Int?>>("Siempre" to null, "24 h" to 1, "7 días" to 7, "14 días" to 14, "30 días" to 30)
+    val dates = listOf<Pair<String, Int?>>("Siempre" to null, "24 h" to 1, "3 días" to 3, "1 semana" to 7, "2 semanas" to 14, "1 mes" to 30)
     AlertDialog(onDismissRequest = onDismiss,
         title = { Text(if (initial.id == 0L) "Nueva playlist" else "Reglas inteligentes") },
         confirmButton = { TextButton(onClick = { onSave(p.copy(name = p.name.ifBlank { "Mi playlist" })) }) { Text("Guardar") } },
@@ -184,7 +187,15 @@ private fun playlistSummary(rows: List<EpisodeRow>): String {
                     }
                 }
                 item { RuleLabel("Estado"); FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { PlayedRule.entries.forEach { r -> FilterChip(PlayedRule.of(p.playedState) == r, onClick = { p = p.copy(playedState = r.key) }, label = { Text(r.label) }) } } }
-                item { RuleLabel("Duración"); FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { durations.forEach { (label, min, max) -> FilterChip(p.minMinutes == min && p.maxMinutes == max, onClick = { p = p.copy(minMinutes = min, maxMinutes = max) }, label = { Text(label) }) } } }
+                item {
+                    RuleLabel("Duración"); FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { durations.forEach { (label, min, max) -> FilterChip(p.minMinutes == min && p.maxMinutes == max, onClick = { p = p.copy(minMinutes = min, maxMinutes = max) }, label = { Text(label) }) } }
+                    // Fine range: 0–180 min in 5 min steps; the ends mean "no limit".
+                    Text(durationRangeLabel(p.minMinutes, p.maxMinutes), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.6f))
+                    RangeSlider(value = (p.minMinutes ?: 0).toFloat()..(p.maxMinutes ?: DURATION_CAP).toFloat(), valueRange = 0f..DURATION_CAP.toFloat(), steps = DURATION_CAP / 5 - 1,
+                        onValueChange = { r -> val lo = (r.start / 5).roundToInt() * 5; val hi = (r.endInclusive / 5).roundToInt() * 5
+                            p = p.copy(minMinutes = lo.takeIf { it > 0 }, maxMinutes = hi.takeIf { it < DURATION_CAP }) },
+                        modifier = Modifier.semantics { contentDescription = "Rango de duración: " + durationRangeLabel(p.minMinutes, p.maxMinutes) })
+                }
                 item { RuleLabel("Publicado"); FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { dates.forEach { (label, days) -> FilterChip(p.withinDays == days, onClick = { p = p.copy(withinDays = days) }, label = { Text(label) }) } } }
                 item { Row(verticalAlignment = Alignment.CenterVertically) { Text("Solo descargados", Modifier.weight(1f)); Switch(p.downloadedOnly, { p = p.copy(downloadedOnly = it) }) } }
                 item { Row(verticalAlignment = Alignment.CenterVertically) { Text("Incluir archivados", Modifier.weight(1f)); Switch(p.includeArchived, { p = p.copy(includeArchived = it) }) } }
@@ -193,3 +204,11 @@ private fun playlistSummary(rows: List<EpisodeRow>): String {
 }
 
 @Composable private fun RuleLabel(text: String) { Text(text.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary); Spacer(Modifier.height(4.dp)) }
+
+private const val DURATION_CAP = 180
+internal fun durationRangeLabel(min: Int?, max: Int?): String = when {
+    min == null && max == null -> "Cualquier duración"
+    min == null -> "Hasta $max min"
+    max == null -> "$min min o más"
+    else -> "De $min a $max min"
+}

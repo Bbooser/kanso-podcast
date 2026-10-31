@@ -77,7 +77,10 @@ object FeedParser {
         return PodcastFeed(enriched, episodes.map { if (it.artworkUrl == null && enriched.artworkUrl != null) it.copy(artworkUrl = enriched.artworkUrl) else it })
     }
 
-    internal fun clean(text: String) = text.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim().take(500)
+    /** Plain text show notes: keeps paragraph and line breaks (so timestamps stay one per line), drops tags. */
+    internal fun clean(text: String) = text.replace(Regex("(?i)<br\\s*/?>|</(p|li|div|h\\d)>"), "\n").replace(Regex("<[^>]+>"), " ")
+        .replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'")
+        .lines().map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.isNotEmpty() }.joinToString("\n").take(4000)
     internal fun parseDate(value: String): Long {
         if (value.isBlank()) return 0L
         val patterns = listOf("EEE, dd MMM yyyy HH:mm:ss Z", "EEE, d MMM yyyy HH:mm:ss Z", "EEE, dd MMM yyyy HH:mm:ss zzz", "EEE, d MMM yyyy HH:mm zzz", "dd MMM yyyy HH:mm:ss Z", "yyyy-MM-dd'T'HH:mm:ssXXX", "yyyy-MM-dd'T'HH:mm:ss.SSSXXX")

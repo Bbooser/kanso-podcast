@@ -21,11 +21,21 @@ class AutomationWorker(context: Context, params: WorkerParameters) : CoroutineWo
             val titles = ids.mapNotNull { repo.episode(it) }.sortedByDescending { it.publishedAt }.map { it.title }
             NewEpisodeNotifier.notify(applicationContext, p.feedUrl, p.title, titles)
         }
+        queueNew(fresh, automation.getString("auto_queue", null))
         deleteExpired(automation.getInt("delete_days", 7))
         val overLimit = KansoStorage.enforceLimit(applicationContext)
         if (!overLimit) downloadNewest(podcasts, automation.getInt("download_count", 0))
         Result.success()
     }.getOrElse { Result.retry() }
+
+    /** Hands new episodes to the playback service, which owns the live queue (see KansoPlaybackService.consumeAutoQueue). */
+    private suspend fun queueNew(fresh: List<Pair<PodcastEntity, List<String>>>, global: String?) {
+        val pending = fresh.flatMap { (p, ids) ->
+            val mode = AutoQueueMode.resolve(p.autoQueue, global)
+            if (mode == AutoQueueMode.NONE) emptyList() else ids.map { com.kanso.podcast.data.db.AutoQueuePending(it, mode == AutoQueueMode.START) }
+        }
+        if (pending.isNotEmpty()) repo.addAutoQueue(pending)
+    }
 
     private suspend fun downloadNewest(podcasts: List<PodcastEntity>, globalCount: Int) {
         val seenPrefs = applicationContext.getSharedPreferences("auto_downloaded", 0)

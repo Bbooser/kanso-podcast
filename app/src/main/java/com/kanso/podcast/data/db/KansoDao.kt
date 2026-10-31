@@ -64,6 +64,44 @@ interface KansoDao {
     @Query("$ROW WHERE e.archived = 1 $ORDER LIMIT 100") fun archived(): Flow<List<EpisodeRow>>
     @Query("$ROW WHERE e.listened = 0 AND e.archived = 0 AND e.podcastFeedUrl = :feedUrl $ORDER LIMIT :limit") suspend fun newestUnplayed(feedUrl: String, limit: Int): List<EpisodeRow>
     @Query("$ROW WHERE e.title LIKE '%' || :query || '%' $ORDER LIMIT 50") suspend fun searchEpisodes(query: String): List<EpisodeRow>
+    /** [match] is an FTS4 MATCH expression, see [com.kanso.podcast.data.LibrarySearch.ftsQuery]. */
+    @Query("$ROW WHERE e.rowid IN (SELECT rowid FROM episodes_fts WHERE episodes_fts MATCH :match) $ORDER LIMIT 100") suspend fun searchLibrary(match: String): List<EpisodeRow>
+
+    // Backup
+    @Query("SELECT * FROM episodes WHERE listened = 1 OR favorite = 1 OR archived = 1 OR progressMs > 0") suspend fun episodesWithState(): List<EpisodeEntity>
+    @Query("SELECT * FROM playlists ORDER BY sortOrder, id") suspend fun playlistList(): List<PlaylistEntity>
+    @Query("SELECT * FROM bookmarks ORDER BY id") suspend fun bookmarkList(): List<BookmarkEntity>
+    @Upsert suspend fun upsertPodcasts(items: List<PodcastEntity>)
+    @Insert suspend fun insertPlaylists(items: List<PlaylistEntity>)
+    @Insert suspend fun insertBookmarks(items: List<BookmarkEntity>)
+    @Query("UPDATE episodes SET listened = :listened, favorite = :favorite, archived = :archived, progressMs = :progressMs, lastPlayedAt = MAX(lastPlayedAt, :lastPlayedAt) WHERE id = :id")
+    suspend fun applyEpisodeState(id: String, listened: Boolean, favorite: Boolean, archived: Boolean, progressMs: Long, lastPlayedAt: Long): Int
+    @Query("DELETE FROM podcasts") suspend fun deleteAllPodcasts()
+    @Query("DELETE FROM episodes") suspend fun deleteAllEpisodes()
+    @Query("DELETE FROM playlists") suspend fun deleteAllPlaylists()
+    @Query("DELETE FROM bookmarks") suspend fun deleteAllBookmarks()
+    @Query("DELETE FROM pending_state") suspend fun deleteAllPending()
+
+    /** Restores a backup in one transaction. Replace wipes the library first; merge keeps what is here and lets the backup win on conflicts. */
+    @Transaction suspend fun restoreBackup(b: com.kanso.podcast.data.KansoBackup, replace: Boolean) {
+        if (replace) { deleteAllPodcasts(); deleteAllEpisodes(); deleteAllFolders(); deleteAllPlaylists(); deleteAllBookmarks(); deleteAllPending() }
+        upsertPodcasts(b.podcasts)
+        insertFolders(b.folders.map(::FolderEntity) + b.podcasts.mapNotNull { it.folder }.map(::FolderEntity))
+        val missing = b.episodes.filter { s -> applyEpisodeState(s.episodeId, s.listened, s.favorite, s.archived, s.progressMs, s.lastPlayedAt) == 0 }
+        // Episodes not downloaded from the feed yet get their state when the feed refreshes.
+        insertPending(missing.map { PendingEpisodeState(it.episodeId, it.listened, it.favorite, it.archived, it.progressMs) })
+        val names = if (replace) emptySet() else playlistList().map { it.name }.toSet()
+        insertPlaylists(b.playlists.filter { it.name !in names }.map { it.copy(id = 0) })
+        val marks = if (replace) emptySet() else bookmarkList().map { it.episodeId to it.positionMs }.toSet()
+        insertBookmarks(b.bookmarks.filter { (it.episodeId to it.positionMs) !in marks }.map { it.copy(id = 0) })
+    }
+
+    // Auto-queue
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertAutoQueue(items: List<AutoQueuePending>)
+    @Query("SELECT * FROM auto_queue_pending ORDER BY addedAt") suspend fun autoQueuePending(): List<AutoQueuePending>
+    @Query("SELECT * FROM auto_queue_pending ORDER BY addedAt") fun autoQueuePendingFlow(): Flow<List<AutoQueuePending>>
+    @Query("DELETE FROM auto_queue_pending WHERE episodeId IN (:ids)") suspend fun deleteAutoQueue(ids: List<String>)
+    @Query("UPDATE podcasts SET autoQueue = :value WHERE feedUrl = :feedUrl") suspend fun setPodcastAutoQueue(feedUrl: String, value: String?)
 
     @Query("UPDATE episodes SET progressMs = :ms, lastPlayedAt = :now WHERE id = :id") suspend fun setProgress(id: String, ms: Long, now: Long)
     @Query("UPDATE episodes SET listened = 1, progressMs = 0, archived = CASE WHEN :archive AND favorite = 0 THEN 1 ELSE archived END WHERE id = :id") suspend fun markFinished(id: String, archive: Boolean)

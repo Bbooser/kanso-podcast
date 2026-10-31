@@ -154,7 +154,7 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
  * "Podcasts": cover grid of followed shows and folders, ordered by the chosen sort with favorites first.
  * Long-press and drag a podcast onto another to make a folder, or onto a folder to add it. [folder] != null shows one folder.
  */
-@Composable internal fun PodcastsScreen(player: PlayerConnection, onOpen: (PodcastSearchResult) -> Unit, onOpenFolder: (String) -> Unit, onDiscover: () -> Unit, modifier: Modifier, folder: String? = null, onBack: (() -> Unit)? = null, vm: PodcastsViewModel = viewModel()) {
+@Composable internal fun PodcastsScreen(player: PlayerConnection, onOpen: (PodcastSearchResult) -> Unit, onOpenFolder: (String) -> Unit, onDiscover: () -> Unit, modifier: Modifier, folder: String? = null, onBack: (() -> Unit)? = null, onSearch: () -> Unit = onDiscover, vm: PodcastsViewModel = viewModel()) {
     val all by vm.podcasts.collectAsStateWithLifecycle()
     val folders by vm.folders.collectAsStateWithLifecycle()
     val loaded by vm.loaded.collectAsStateWithLifecycle()
@@ -209,7 +209,7 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
             Text(folder ?: "Podcasts", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (folder == null) IconButton(onClick = { create = true }) { Icon(Icons.Outlined.CreateNewFolder, "Nueva carpeta", tint = MaterialTheme.colorScheme.secondary) }
             CastButton(player)
-            IconButton(onClick = onDiscover) { Icon(Icons.Outlined.Search, "Buscar", tint = MaterialTheme.colorScheme.secondary) }
+            IconButton(onClick = onSearch) { Icon(Icons.Outlined.Search, "Buscar episodios en tu biblioteca", tint = MaterialTheme.colorScheme.secondary) }
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                 DropdownMenu(menu, { menu = false }) {

@@ -73,6 +73,7 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
     fun setAutoDownload(count: Int) = viewModelScope.launch { podcast?.let { repo.setAutoDownloadCount(it.feedUrl, count) } }
     fun toggleFavorite() = viewModelScope.launch { subscription.value?.let { repo.setPodcastFavorite(it.feedUrl, !it.isFavorite) } }
     fun setAutoArchive(value: Boolean?) = viewModelScope.launch { podcast?.let { repo.setPodcastAutoArchive(it.feedUrl, value) } }
+    fun setAutoQueue(value: String?) = viewModelScope.launch { podcast?.let { repo.setPodcastAutoQueue(it.feedUrl, value) } }
     fun bulk(ids: Set<String>, archive: Boolean?, markListened: Boolean) = viewModelScope.launch { repo.bulkEpisodes(ids, archive, markListened) }
     fun saveSettings(speed: Float?, intro: Int, outro: Int, sort: String, notify: Boolean) = viewModelScope.launch { podcast?.let { repo.savePodcastSettings(it.feedUrl, speed, intro, outro, sort, notify) } }
 }
@@ -90,8 +91,8 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
     androidx.activity.compose.BackHandler(enabled = selection != null || showArchived) { if (selection != null) selection = null else showArchived = false }
     var selected by remember { mutableStateOf<String?>(null) }
     EpisodeSheetHost(selected, episodes.map { EpisodeRow(it, podcast.title, podcast.artworkUrl, podcast.author) }, player, downloaded, onDismiss = { selected = null }, onOpenPodcast = null)
-    if (settings) subscription?.let { sub -> PodcastSettingsDialog(sub, context, onDismiss = { settings = false }) { count, speed, intro, outro, sort, notify, autoArchive ->
-        vm.setAutoDownload(count); vm.setAutoArchive(autoArchive); vm.saveSettings(speed, intro, outro, sort, notify); settings = false
+    if (settings) subscription?.let { sub -> PodcastSettingsDialog(sub, context, onDismiss = { settings = false }) { count, speed, intro, outro, sort, notify, autoArchive, autoQueue ->
+        vm.setAutoDownload(count); vm.setAutoArchive(autoArchive); vm.setAutoQueue(autoQueue); vm.saveSettings(speed, intro, outro, sort, notify); settings = false
     } }
     val sorted = if (subscription?.episodeSort == "OLDEST") episodes.reversed() else episodes
     val archivedCount = detailEpisodes(episodes, archivedView = true).size
@@ -160,7 +161,7 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
 
 /** Per-podcast settings: downloads, new-episode notifications, speed, skip intro/outro and episode order. */
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun PodcastSettingsDialog(sub: PodcastEntity, context: Context, onDismiss: () -> Unit, onSave: (Int, Float?, Int, Int, String, Boolean, Boolean?) -> Unit) {
+@Composable private fun PodcastSettingsDialog(sub: PodcastEntity, context: Context, onDismiss: () -> Unit, onSave: (Int, Float?, Int, Int, String, Boolean, Boolean?, String?) -> Unit) {
     val global = remember { context.getSharedPreferences("automation", 0).getInt("download_count", 0) }
     var count by remember { mutableIntStateOf(sub.autoDownloadCount ?: global) }
     var speed by remember { mutableStateOf(sub.playbackSpeed) }
@@ -169,6 +170,7 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
     var sort by remember { mutableStateOf(sub.episodeSort) }
     var notify by remember { mutableStateOf(sub.notifyNewEpisodes) }
     var autoArchive by remember { mutableStateOf(sub.autoArchive) }
+    var autoQueue by remember { mutableStateOf(sub.autoQueue) }
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted -> notify = granted }
     val muted = MaterialTheme.colorScheme.onSurface.copy(.55f)
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Ajustes del podcast") },
@@ -204,6 +206,12 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
                     FilterChip(autoArchive == false, onClick = { autoArchive = false }, label = { Text("No") })
                 }
                 HorizontalDivider()
+                Text("Nuevos episodios a la cola", fontWeight = FontWeight.Medium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(autoQueue == null, onClick = { autoQueue = null }, label = { Text("General") })
+                    com.kanso.podcast.data.AutoQueueMode.entries.forEach { m -> FilterChip(autoQueue == m.key, onClick = { autoQueue = m.key }, label = { Text(m.label) }) }
+                }
+                HorizontalDivider()
                 Text("Orden de episodios", fontWeight = FontWeight.Medium)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(sort != "OLDEST", onClick = { sort = "NEWEST" }, label = { Text("Más nuevos primero") })
@@ -211,6 +219,6 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(count, speed, intro, outro, sort, notify, autoArchive) }) { Text("Guardar") } },
+        confirmButton = { TextButton(onClick = { onSave(count, speed, intro, outro, sort, notify, autoArchive, autoQueue) }) { Text("Guardar") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } })
 }
