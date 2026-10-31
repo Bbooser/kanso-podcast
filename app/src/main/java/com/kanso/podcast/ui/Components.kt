@@ -1,6 +1,7 @@
 @file:androidx.media3.common.util.UnstableApi
 package com.kanso.podcast.ui
 
+import androidx.compose.foundation.selection.toggleable
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -112,16 +113,19 @@ internal fun remainingMs(e: EpisodeEntity): Long { val total = parseDurationMs(e
  * Compact episode row used in every list: artwork, date, title, remaining time and a play button ringed with progress.
  * Swipe right to add to "A continuación"; tap to open the episode sheet.
  */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable internal fun EpisodeListRow(row: EpisodeRow, current: Boolean, playing: Boolean, downloaded: Boolean, onPlay: () -> Unit, onQueue: () -> Unit, onClick: () -> Unit, showArtwork: Boolean = true) {
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable internal fun EpisodeListRow(row: EpisodeRow, current: Boolean, playing: Boolean, downloaded: Boolean, onPlay: () -> Unit, onQueue: () -> Unit, onClick: () -> Unit, showArtwork: Boolean = true, onLongClick: (() -> Unit)? = null, selected: Boolean? = null) {
     val e = row.episode
-    val state = rememberSwipeToDismissBoxState(confirmValueChange = { value -> if (value == SwipeToDismissBoxValue.StartToEnd) onQueue(); false })
+    val state = rememberSwipeToDismissBoxState(confirmValueChange = { value -> if (value == SwipeToDismissBoxValue.StartToEnd && selected == null) onQueue(); false })
     SwipeToDismissBox(state, enableDismissFromEndToStart = false, backgroundContent = {
         Row(Modifier.fillMaxSize().clip(Kanso.art).background(MaterialTheme.colorScheme.secondary.copy(.85f)).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("A continuación", color = Color.White, fontWeight = FontWeight.SemiBold)
         }
     }) {
-        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).clickable(onClick = onClick).padding(vertical = 10.dp).alpha(if (e.listened || e.archived) .5f else 1f), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().background(if (selected == true) MaterialTheme.colorScheme.secondary.copy(.12f) else MaterialTheme.colorScheme.background)
+            .then(if (selected != null) Modifier.toggleable(selected, role = androidx.compose.ui.semantics.Role.Checkbox, onValueChange = { onClick() })
+                  else Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = if (onLongClick != null) "Seleccionar" else null))
+            .padding(vertical = 10.dp).alpha(if (e.listened || e.archived) .5f else 1f), verticalAlignment = Alignment.CenterVertically) {
             if (showArtwork) { Artwork(e.artworkUrl ?: row.podcastArtwork, e.title, 56.dp, RoundedCornerShape(10.dp)); Spacer(Modifier.width(Kanso.itemGap)) }
             Column(Modifier.weight(1f)) {
                 Text(e.published.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(.5f), maxLines = 1)
@@ -133,7 +137,8 @@ internal fun remainingMs(e: EpisodeEntity): Long { val total = parseDurationMs(e
                 }
             }
             Spacer(Modifier.width(8.dp))
-            PlayRing(progressFraction(e), current && playing, onPlay)
+            if (selected != null) Checkbox(selected, onCheckedChange = null)
+            else PlayRing(progressFraction(e), current && playing, onPlay)
         }
     }
 }
@@ -192,12 +197,13 @@ internal fun remainingMs(e: EpisodeEntity): Long { val total = parseDurationMs(e
 }
 
 /** A list of episode rows with its own sheet; used by playlists, profile pages and podcast detail. */
-internal fun LazyListScope.episodeRows(rows: List<EpisodeRow>, player: PlayerConnection, downloaded: Set<String>, onSelect: (String) -> Unit, showArtwork: Boolean = true, keyPrefix: String = "") {
+internal fun LazyListScope.episodeRows(rows: List<EpisodeRow>, player: PlayerConnection, downloaded: Set<String>, onSelect: (String) -> Unit, showArtwork: Boolean = true, keyPrefix: String = "", onLongSelect: ((String) -> Unit)? = null, selection: Set<String>? = null) {
     items(rows, key = { keyPrefix + it.episode.id }) { row ->
         val e = row.episode
         EpisodeListRow(row, player.episodeId == e.id, player.playing, e.id in downloaded,
             onPlay = { if (player.episodeId == e.id) player.toggle() else player.play(e, row.podcastTitle.orEmpty(), row.podcastArtwork) },
-            onQueue = { player.enqueue(e, row.podcastTitle.orEmpty(), row.podcastArtwork) }, onClick = { onSelect(e.id) }, showArtwork = showArtwork)
+            onQueue = { player.enqueue(e, row.podcastTitle.orEmpty(), row.podcastArtwork) }, onClick = { onSelect(e.id) }, showArtwork = showArtwork,
+            onLongClick = onLongSelect?.let { f -> { f(e.id) } }, selected = selection?.let { e.id in it })
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.15f))
     }
 }

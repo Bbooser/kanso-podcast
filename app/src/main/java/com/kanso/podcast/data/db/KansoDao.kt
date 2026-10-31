@@ -21,6 +21,11 @@ interface KansoDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPodcasts(items: List<PodcastEntity>)
     @Query("DELETE FROM podcasts WHERE feedUrl = :feedUrl") suspend fun deletePodcast(feedUrl: String)
     @Query("UPDATE podcasts SET folder = :folder WHERE feedUrl = :feedUrl") suspend fun setFolder(feedUrl: String, folder: String?)
+    @Query("UPDATE podcasts SET isFavorite = :value WHERE feedUrl = :feedUrl") suspend fun setPodcastFavorite(feedUrl: String, value: Boolean)
+    @Query("UPDATE podcasts SET autoArchive = :value WHERE feedUrl = :feedUrl") suspend fun setPodcastAutoArchive(feedUrl: String, value: Boolean?)
+    /** "New" = unplayed, untouched, not archived and published since the podcast was followed. */
+    @Query("SELECT p.feedUrl AS feedUrl, MAX(e.publishedAt) AS latestEpisodeAt, COALESCE(SUM(CASE WHEN e.listened = 0 AND e.archived = 0 AND e.progressMs = 0 AND e.publishedAt >= p.subscribedAt THEN 1 ELSE 0 END), 0) AS newEpisodes FROM podcasts p LEFT JOIN episodes e ON e.podcastFeedUrl = p.feedUrl GROUP BY p.feedUrl")
+    fun podcastLibraryStats(): Flow<List<PodcastLibraryStat>>
     @Query("UPDATE podcasts SET autoDownloadCount = :count WHERE feedUrl = :feedUrl") suspend fun setAutoDownloadCount(feedUrl: String, count: Int?)
     @Query("UPDATE podcasts SET playbackSpeed = :speed, skipIntroSec = :intro, skipOutroSec = :outro, episodeSort = :sort, notifyNewEpisodes = :notify WHERE feedUrl = :feedUrl")
     suspend fun setPodcastSettings(feedUrl: String, speed: Float?, intro: Int, outro: Int, sort: String, notify: Boolean)
@@ -52,6 +57,12 @@ interface KansoDao {
     @Query("UPDATE episodes SET listened = :value, progressMs = CASE WHEN :value THEN 0 ELSE progressMs END, archived = CASE WHEN :value THEN archived ELSE 0 END WHERE id = :id") suspend fun setListened(id: String, value: Boolean)
     @Query("UPDATE episodes SET favorite = :value WHERE id = :id") suspend fun setFavorite(id: String, value: Boolean)
     @Query("UPDATE episodes SET archived = :value WHERE id = :id") suspend fun setArchived(id: String, value: Boolean)
+    @Query("UPDATE episodes SET archived = :value WHERE id IN (:ids)") suspend fun setArchivedIds(ids: List<String>, value: Boolean)
+    @Query("UPDATE episodes SET listened = 1, progressMs = 0 WHERE id IN (:ids)") suspend fun markListenedIds(ids: List<String>)
+    /** Bulk actions from multi-select, chunked under SQLite's variable limit, all in one transaction. */
+    @Transaction suspend fun bulkEpisodes(ids: List<String>, archive: Boolean?, markListened: Boolean) {
+        ids.chunked(500).forEach { chunk -> if (markListened) markListenedIds(chunk); if (archive != null) setArchivedIds(chunk, archive) }
+    }
     @Query("SELECT id FROM episodes WHERE listened = 1 AND favorite = 0") suspend fun playedNonFavoriteIds(): List<String>
 
     // Pending state from the legacy migration

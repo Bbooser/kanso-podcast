@@ -35,12 +35,27 @@ class MigrationTest {
         db.query("SELECT listenedMs FROM listening_days").use { c -> assertTrue(c.moveToFirst()); assertEquals(1000, c.getLong(0)) }
     }
 
+    @Test fun migrate3To4KeepsDataAndAddsFavorite() {
+        helper.createDatabase(name, 3).apply {
+            execSQL("INSERT INTO podcasts(feedUrl, id, title, author, artworkUrl, genre, folder, autoDownloadCount, subscribedAt, playbackSpeed, skipIntroSec, skipOutroSec, episodeSort, notifyNewEpisodes) VALUES('https://c.mx/rss', '3', 'C', 'Autor', NULL, 'Podcast', 'Cultura', 1, 9, 1.5, 30, 0, 'OLDEST', 1)")
+            execSQL("INSERT INTO episodes(id, podcastFeedUrl, title, description, audioUrl, published, publishedAt, duration, artworkUrl, sortIndex, listened, favorite, archived, progressMs, lastPlayedAt) VALUES('e3', 'https://c.mx/rss', 'E', '', 'https://c.mx/e3.mp3', '', 1, '10:00', NULL, 0, 1, 0, 1, 0, 7)")
+            close()
+        }
+        val db = helper.runMigrationsAndValidate(name, 4, true)
+        db.query("SELECT folder, playbackSpeed, skipIntroSec, episodeSort, notifyNewEpisodes, isFavorite, autoArchive FROM podcasts").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("Cultura", c.getString(0)); assertEquals(1.5f, c.getFloat(1)); assertEquals(30, c.getInt(2)); assertEquals("OLDEST", c.getString(3)); assertEquals(1, c.getInt(4))
+            assertEquals(0, c.getInt(5)); assertTrue(c.isNull(6))
+        }
+        db.query("SELECT listened, archived FROM episodes WHERE id = 'e3'").use { c -> assertTrue(c.moveToFirst()); assertEquals(1, c.getInt(0)); assertEquals(1, c.getInt(1)) }
+    }
+
     @Test fun migrate1To3() {
         helper.createDatabase(name, 1).apply {
             execSQL("INSERT INTO podcasts(feedUrl, id, title, author, artworkUrl, genre, folder, autoDownloadCount, subscribedAt) VALUES('https://b.mx/rss', '2', 'B', '', NULL, 'Podcast', NULL, NULL, 1)")
             close()
         }
-        helper.runMigrationsAndValidate(name, 3, true).query("SELECT COUNT(*) FROM podcasts").use { c -> assertTrue(c.moveToFirst()); assertEquals(1, c.getInt(0)) }
+        helper.runMigrationsAndValidate(name, 4, true).query("SELECT COUNT(*) FROM podcasts").use { c -> assertTrue(c.moveToFirst()); assertEquals(1, c.getInt(0)) }
     }
 
     @Test fun freshDatabaseOpens() {

@@ -42,6 +42,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.kanso.podcast.data.EpisodeDownloads
 import com.kanso.podcast.data.KansoRepository
+import com.kanso.podcast.data.PodcastSort
+import com.kanso.podcast.data.sortPodcasts
 import com.kanso.podcast.data.db.EpisodeEntity
 import com.kanso.podcast.data.db.EpisodeRow
 import com.kanso.podcast.data.db.PodcastEntity
@@ -52,14 +54,17 @@ import kotlinx.coroutines.launch
 internal class PodcastsViewModel(app: android.app.Application) : AndroidViewModel(app) {
     private val repo = KansoRepository.get(app)
     private val prefs = app.getSharedPreferences("appearance", 0)
-    var sortRecent by mutableStateOf(prefs.getBoolean("podcasts_sort_recent", false)); private set
+    // Older builds stored a boolean ("recientes" vs título); keep that choice on upgrade.
+    var sort by mutableStateOf(PodcastSort.parse(prefs.getString("podcasts_sort", null)) ?: if (prefs.getBoolean("podcasts_sort_recent", false)) PodcastSort.RECENT else PodcastSort.NAME); private set
     val podcasts = repo.podcastEntities.stateIn(this, emptyList())
+    val stats = repo.podcastLibraryStats.map { list -> list.associateBy { it.feedUrl } }.stateIn(this, emptyMap())
+    fun toggleFavorite(p: PodcastEntity) = viewModelScope.launch { repo.setPodcastFavorite(p.feedUrl, !p.isFavorite) }
     val folders = repo.folders.stateIn(this, emptyList())
     val loaded = repo.podcastEntities.map { true }.stateIn(this, false)
     fun unsubscribe(p: PodcastEntity) = viewModelScope.launch { repo.unsubscribe(p.feedUrl) }
     fun move(p: PodcastEntity, folder: String?) = viewModelScope.launch { repo.setFolder(p.feedUrl, folder) }
     fun createFolder(name: String) = viewModelScope.launch { if (name.isNotBlank()) repo.createFolder(name) }
-    fun toggleSort() { sortRecent = !sortRecent; prefs.edit().putBoolean("podcasts_sort_recent", sortRecent).apply() }
+    fun chooseSort(value: PodcastSort) { sort = value; prefs.edit().putString("podcasts_sort", value.name).apply() }
     fun refreshAll() { androidx.work.WorkManager.getInstance(getApplication()).enqueue(androidx.work.OneTimeWorkRequestBuilder<com.kanso.podcast.data.AutomationWorker>().build()) }
 }
 
@@ -70,13 +75,14 @@ private sealed interface GridTile { data class Folder(val name: String, val cove
     val all by vm.podcasts.collectAsStateWithLifecycle()
     val folders by vm.folders.collectAsStateWithLifecycle()
     val loaded by vm.loaded.collectAsStateWithLifecycle()
+    val stats by vm.stats.collectAsStateWithLifecycle()
     var create by remember { mutableStateOf(false) }; var newName by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     if (create) AlertDialog(onDismissRequest = { create = false }, title = { Text("Nueva carpeta") },
         text = { OutlinedTextField(newName, { newName = it }, label = { Text("Nombre") }, singleLine = true) },
         confirmButton = { TextButton(onClick = { vm.createFolder(newName); newName = ""; create = false }) { Text("Crear") } },
         dismissButton = { TextButton(onClick = { create = false }) { Text("Cancelar") } })
-    val sorted = if (vm.sortRecent) all.sortedByDescending { it.subscribedAt } else all
+    val sorted = remember(all, stats, vm.sort) { sortPodcasts(all, stats, vm.sort) }
     val tiles: List<GridTile> = if (folder != null) sorted.filter { it.folder == folder }.map { GridTile.Podcast(it) } else
         folders.map { name -> val inside = sorted.filter { it.folder == name }; GridTile.Folder(name, inside.take(4).map { it.artworkUrl }, inside.size) } +
             sorted.filter { it.folder == null || it.folder !in folders }.map { GridTile.Podcast(it) }
@@ -90,7 +96,13 @@ private sealed interface GridTile { data class Folder(val name: String, val cove
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                 DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem({ Text(if (vm.sortRecent) "Ordenar por título" else "Ordenar por recientes") }, onClick = { menu = false; vm.toggleSort() }, leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Sort, null) })
+                    Text("Ordenar por", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(.55f))
+                    PodcastSort.entries.forEach { s ->
+                        DropdownMenuItem({ Text(s.label) }, onClick = { menu = false; vm.chooseSort(s) },
+                            leadingIcon = { if (vm.sort == s) Icon(Icons.Default.Check, "Seleccionado", tint = MaterialTheme.colorScheme.secondary) else Spacer(Modifier.size(24.dp)) })
+                    }
+                    Text("Los favoritos siempre van primero", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.55f))
+                    HorizontalDivider()
                     DropdownMenuItem({ Text("Actualizar todos los feeds") }, onClick = { menu = false; vm.refreshAll() }, leadingIcon = { Icon(Icons.Outlined.Sync, null) })
                 }
             }
@@ -100,7 +112,7 @@ private sealed interface GridTile { data class Folder(val name: String, val cove
             items(tiles, key = { when (it) { is GridTile.Folder -> "f:" + it.name; is GridTile.Podcast -> it.p.feedUrl } }) { tile ->
                 when (tile) {
                     is GridTile.Folder -> FolderTile(tile) { onOpenFolder(tile.name) }
-                    is GridTile.Podcast -> PodcastTile(tile.p, folders, { onOpen(tile.p.toModel()) }, { vm.unsubscribe(tile.p) }, { vm.move(tile.p, it) })
+                    is GridTile.Podcast -> PodcastTile(tile.p, folders, { onOpen(tile.p.toModel()) }, { vm.unsubscribe(tile.p) }, { vm.move(tile.p, it) }, { vm.toggleFavorite(tile.p) })
                 }
             }
         }
@@ -121,15 +133,20 @@ private sealed interface GridTile { data class Folder(val name: String, val cove
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun PodcastTile(podcast: PodcastEntity, folders: List<String>, onOpen: () -> Unit, onRemove: () -> Unit, onAssign: (String?) -> Unit) {
+@Composable private fun PodcastTile(podcast: PodcastEntity, folders: List<String>, onOpen: () -> Unit, onRemove: () -> Unit, onAssign: (String?) -> Unit, onFavorite: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Box {
         Box(Modifier.aspectRatio(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).combinedClickable(onClick = onOpen, onLongClick = { menu = true }), contentAlignment = Alignment.Center) {
             if (podcast.artworkUrl != null) AsyncImage(podcast.artworkUrl, podcast.title, Modifier.fillMaxSize())
             else Text(podcast.title, Modifier.padding(8.dp), style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = 4)
         }
+        if (podcast.isFavorite) Surface(Modifier.align(Alignment.TopEnd).padding(6.dp), shape = CircleShape, color = MaterialTheme.colorScheme.background.copy(.85f)) {
+            Icon(Icons.Default.Star, "Favorito", Modifier.padding(3.dp).size(14.dp), tint = MaterialTheme.colorScheme.secondary)
+        }
         DropdownMenu(menu, { menu = false }) {
             Text(podcast.title, Modifier.padding(horizontal = 16.dp, vertical = 6.dp).widthIn(max = 240.dp), style = MaterialTheme.typography.labelLarge, maxLines = 2)
+            DropdownMenuItem({ Text(if (podcast.isFavorite) "Quitar de favoritos" else "Marcar como favorito") }, onClick = { menu = false; onFavorite() },
+                leadingIcon = { Icon(if (podcast.isFavorite) Icons.Default.Star else Icons.Outlined.StarBorder, null) })
             folders.filter { it != podcast.folder }.forEach { f -> DropdownMenuItem({ Text("Mover a $f") }, onClick = { menu = false; onAssign(f) }, leadingIcon = { Icon(Icons.Outlined.Folder, null) }) }
             if (podcast.folder != null) DropdownMenuItem({ Text("Quitar de la carpeta") }, onClick = { menu = false; onAssign(null) }, leadingIcon = { Icon(Icons.Outlined.FolderOff, null) })
             DropdownMenuItem({ Text("Dejar de seguir") }, onClick = { menu = false; onRemove() }, leadingIcon = { Icon(Icons.Outlined.Delete, null) })
