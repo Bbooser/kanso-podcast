@@ -13,8 +13,8 @@ android {
         applicationId = "com.kanso.podcast"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.3.0"
+        versionCode = 16
+        versionName = "0.3.1"
     }
 
     buildFeatures { compose = true; buildConfig = true }

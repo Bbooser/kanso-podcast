@@ -28,6 +28,10 @@ data class PodcastEntity(
     /** NEWEST or OLDEST. */
     @ColumnInfo(defaultValue = "NEWEST") val episodeSort: String = "NEWEST",
     @ColumnInfo(defaultValue = "0") val notifyNewEpisodes: Boolean = false,
+    /** Pinned to the top of the Podcasts grid in every sort mode. */
+    @ColumnInfo(defaultValue = "0") val isFavorite: Boolean = false,
+    /** null = use the global "Archivar al terminar" setting. */
+    @ColumnInfo(defaultValue = "NULL") val autoArchive: Boolean? = null,
 ) {
     fun toModel() = PodcastSearchResult(id, title, author, feedUrl, artworkUrl, genre)
     companion object {
@@ -180,3 +184,6 @@ data class DownloadRow(
     @ColumnInfo(name = "favorite") val favorite: Boolean?,
     @ColumnInfo(name = "publishedAt") val publishedAt: Long?,
 )
+
+/** Per-podcast library stats used to sort the Podcasts grid. */
+data class PodcastLibraryStat(val feedUrl: String, val latestEpisodeAt: Long?, val newEpisodes: Int)

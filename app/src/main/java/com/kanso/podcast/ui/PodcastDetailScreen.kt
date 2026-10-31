@@ -1,6 +1,7 @@
 @file:androidx.media3.common.util.UnstableApi
 package com.kanso.podcast.ui
 
+import com.kanso.podcast.data.detailEpisodes
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.verticalScroll
@@ -70,9 +71,13 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
     }
     fun subscribe() = viewModelScope.launch { podcast?.let { repo.subscribe(it) } }
     fun setAutoDownload(count: Int) = viewModelScope.launch { podcast?.let { repo.setAutoDownloadCount(it.feedUrl, count) } }
+    fun toggleFavorite() = viewModelScope.launch { subscription.value?.let { repo.setPodcastFavorite(it.feedUrl, !it.isFavorite) } }
+    fun setAutoArchive(value: Boolean?) = viewModelScope.launch { podcast?.let { repo.setPodcastAutoArchive(it.feedUrl, value) } }
+    fun bulk(ids: Set<String>, archive: Boolean?, markListened: Boolean) = viewModelScope.launch { repo.bulkEpisodes(ids, archive, markListened) }
     fun saveSettings(speed: Float?, intro: Int, outro: Int, sort: String, notify: Boolean) = viewModelScope.launch { podcast?.let { repo.savePodcastSettings(it.feedUrl, speed, intro, outro, sort, notify) } }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable internal fun PodcastDetailScreen(podcast: PodcastSearchResult, player: PlayerConnection, onBack: () -> Unit, modifier: Modifier, vm: PodcastViewModel = viewModel(key = podcast.feedUrl)) {
     LaunchedEffect(podcast.feedUrl) { vm.load(podcast) }
     val episodes by vm.episodes.collectAsStateWithLifecycle()
@@ -80,17 +85,41 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
     val downloaded by vm.downloaded.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var settings by remember { mutableStateOf(false) }
-    var showArchived by remember { mutableStateOf(false) }
+    var showArchived by rememberSaveable(podcast.feedUrl) { mutableStateOf(false) }
+    var selection by remember { mutableStateOf<Set<String>?>(null) }
+    androidx.activity.compose.BackHandler(enabled = selection != null || showArchived) { if (selection != null) selection = null else showArchived = false }
     var selected by remember { mutableStateOf<String?>(null) }
     EpisodeSheetHost(selected, episodes.map { EpisodeRow(it, podcast.title, podcast.artworkUrl, podcast.author) }, player, downloaded, onDismiss = { selected = null }, onOpenPodcast = null)
-    if (settings) subscription?.let { sub -> PodcastSettingsDialog(sub, context, onDismiss = { settings = false }) { count, speed, intro, outro, sort, notify ->
-        vm.setAutoDownload(count); vm.saveSettings(speed, intro, outro, sort, notify); settings = false
+    if (settings) subscription?.let { sub -> PodcastSettingsDialog(sub, context, onDismiss = { settings = false }) { count, speed, intro, outro, sort, notify, autoArchive ->
+        vm.setAutoDownload(count); vm.setAutoArchive(autoArchive); vm.saveSettings(speed, intro, outro, sort, notify); settings = false
     } }
-    val archivedCount = episodes.count { it.archived }
     val sorted = if (subscription?.episodeSort == "OLDEST") episodes.reversed() else episodes
-    val visible = if (showArchived) sorted else sorted.filter { !it.archived }
+    val archivedCount = detailEpisodes(episodes, archivedView = true).size
+    val visible = detailEpisodes(sorted, showArchived)
+    LaunchedEffect(showArchived) { selection = null }
+    val sel = selection
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        item {
+        if (sel != null) stickyHeader(key = "selection") {
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { selection = null }) { Icon(Icons.Default.Close, "Salir de la selección") }
+                Text("${sel.size} seleccionados", Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                TextButton(onClick = { selection = if (sel.size == visible.size) emptySet() else visible.map { it.id }.toSet() }) { Text(if (sel.size == visible.size && visible.isNotEmpty()) "Ninguno" else "Seleccionar todo") }
+                if (!showArchived) IconButton(onClick = { vm.bulk(sel, null, markListened = true); selection = null }, enabled = sel.isNotEmpty()) { Icon(Icons.Outlined.DoneAll, "Marcar como escuchados") }
+                IconButton(onClick = { vm.bulk(sel, archive = !showArchived, markListened = false); selection = null }, enabled = sel.isNotEmpty()) {
+                    Icon(if (showArchived) Icons.Outlined.Unarchive else Icons.Outlined.Archive, if (showArchived) "Desarchivar" else "Archivar")
+                }
+            }
+        }
+        if (showArchived) item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { showArchived = false }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver a episodios") }
+                Column(Modifier.weight(1f)) {
+                    Text("Archivados", style = MaterialTheme.typography.headlineSmall)
+                    Text(podcast.title, color = MaterialTheme.colorScheme.onSurface.copy(.55f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+        if (!showArchived) item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
                 Artwork(podcast.artworkUrl, podcast.title, 76.dp, RoundedCornerShape(18.dp))
@@ -101,22 +130,29 @@ internal class PodcastViewModel(app: android.app.Application) : AndroidViewModel
                 }
             }
         }
-        item {
+        if (!showArchived) item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (subscription == null) Button(onClick = { vm.subscribe() }) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Seguir") }
                 else FilledTonalButton(onClick = { settings = true }) { Icon(Icons.Outlined.Tune, null); Spacer(Modifier.width(6.dp)); Text("Ajustes") }
                 Spacer(Modifier.weight(1f))
+                subscription?.let { sub -> IconButton(onClick = { vm.toggleFavorite() }) {
+                    Icon(if (sub.isFavorite) Icons.Default.Star else Icons.Outlined.StarBorder, if (sub.isFavorite) "Quitar de favoritos" else "Marcar como favorito", tint = MaterialTheme.colorScheme.secondary)
+                } }
                 IconButton(onClick = vm::refresh, enabled = !vm.refreshing) { Icon(Icons.Outlined.Sync, "Actualizar feed") }
             }
         }
-        item { SectionLabel("Episodios", if (episodes.isEmpty()) null else "${visible.size}") }
+        if (!showArchived) item { SectionLabel("Episodios", if (episodes.isEmpty()) null else "${visible.size}") }
         if (vm.refreshing && episodes.isEmpty()) item { LinearProgressIndicator(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.secondary) }
         vm.error?.let { item { Text(it, color = if (episodes.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(.55f), style = MaterialTheme.typography.bodySmall) } }
         if (!vm.refreshing && episodes.isEmpty() && vm.error == null) item { Text("Este feed no contiene episodios reproducibles.") }
-        if (archivedCount > 0) item {
-            TextButton(onClick = { showArchived = !showArchived }) { Icon(Icons.Outlined.Inventory2, null); Spacer(Modifier.width(6.dp)); Text(if (showArchived) "Ocultar archivados" else "Mostrar $archivedCount archivados") }
+        if (!showArchived && archivedCount > 0 && sel == null) item {
+            TextButton(onClick = { showArchived = true }) { Icon(Icons.Outlined.Inventory2, null); Spacer(Modifier.width(6.dp)); Text("Archivados y escuchados · $archivedCount") }
         }
-        episodeRows(visible.map { EpisodeRow(it, podcast.title, podcast.artworkUrl, podcast.author) }, player, downloaded, onSelect = { selected = it }, showArtwork = false)
+        if (showArchived && visible.isEmpty()) item { Text("No hay episodios archivados ni escuchados.", color = MaterialTheme.colorScheme.onSurface.copy(.55f)) }
+        if (showArchived && visible.isNotEmpty() && sel == null) item { Text("Mantén presionado un episodio para seleccionar varios.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(.55f)) }
+        episodeRows(visible.map { EpisodeRow(it, podcast.title, podcast.artworkUrl, podcast.author) }, player, downloaded,
+            onSelect = { id -> val cur = selection; if (cur != null) selection = if (id in cur) cur - id else cur + id else selected = id }, showArtwork = false,
+            onLongSelect = { id -> selection = (selection ?: emptySet()) + id }, selection = sel)
     }
 }
 
@@ -124,7 +160,7 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
 
 /** Per-podcast settings: downloads, new-episode notifications, speed, skip intro/outro and episode order. */
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun PodcastSettingsDialog(sub: PodcastEntity, context: Context, onDismiss: () -> Unit, onSave: (Int, Float?, Int, Int, String, Boolean) -> Unit) {
+@Composable private fun PodcastSettingsDialog(sub: PodcastEntity, context: Context, onDismiss: () -> Unit, onSave: (Int, Float?, Int, Int, String, Boolean, Boolean?) -> Unit) {
     val global = remember { context.getSharedPreferences("automation", 0).getInt("download_count", 0) }
     var count by remember { mutableIntStateOf(sub.autoDownloadCount ?: global) }
     var speed by remember { mutableStateOf(sub.playbackSpeed) }
@@ -132,6 +168,7 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
     var outro by remember { mutableIntStateOf(sub.skipOutroSec) }
     var sort by remember { mutableStateOf(sub.episodeSort) }
     var notify by remember { mutableStateOf(sub.notifyNewEpisodes) }
+    var autoArchive by remember { mutableStateOf(sub.autoArchive) }
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted -> notify = granted }
     val muted = MaterialTheme.colorScheme.onSurface.copy(.55f)
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Ajustes del podcast") },
@@ -160,6 +197,13 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
                 Text(if (outro == 0) "Saltar cierre: no" else "Saltar los últimos $outro s", fontWeight = FontWeight.Medium)
                 Slider(outro.toFloat(), { outro = (it / 5).toInt() * 5 }, valueRange = 0f..120f, steps = 23)
                 HorizontalDivider()
+                Text("Archivar al terminar", fontWeight = FontWeight.Medium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(autoArchive == null, onClick = { autoArchive = null }, label = { Text("General") })
+                    FilterChip(autoArchive == true, onClick = { autoArchive = true }, label = { Text("Sí") })
+                    FilterChip(autoArchive == false, onClick = { autoArchive = false }, label = { Text("No") })
+                }
+                HorizontalDivider()
                 Text("Orden de episodios", fontWeight = FontWeight.Medium)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(sort != "OLDEST", onClick = { sort = "NEWEST" }, label = { Text("Más nuevos primero") })
@@ -167,6 +211,6 @@ private val PODCAST_SPEEDS = listOf(0.8f, 1f, 1.2f, 1.5f, 1.8f, 2f)
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(count, speed, intro, outro, sort, notify) }) { Text("Guardar") } },
+        confirmButton = { TextButton(onClick = { onSave(count, speed, intro, outro, sort, notify, autoArchive) }) { Text("Guardar") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } })
 }

@@ -41,6 +41,9 @@ class KansoRepository private constructor(context: Context) {
     val podcastEntities: Flow<List<PodcastEntity>> = gated { dao.podcasts() }
     val podcasts: Flow<List<PodcastSearchResult>> = podcastEntities.map { list -> list.map(PodcastEntity::toModel) }
     val folders: Flow<List<String>> = gated { dao.folders() }
+    val podcastLibraryStats: Flow<List<com.kanso.podcast.data.db.PodcastLibraryStat>> = gated { dao.podcastLibraryStats() }
+    suspend fun setPodcastFavorite(feedUrl: String, value: Boolean) = io { dao.setPodcastFavorite(feedUrl, value) }
+    suspend fun setPodcastAutoArchive(feedUrl: String, value: Boolean?) = io { dao.setPodcastAutoArchive(feedUrl, value) }
     fun podcast(feedUrl: String): Flow<PodcastEntity?> = gated { dao.podcast(feedUrl) }
     suspend fun podcastList() = io { dao.podcastList() }
     suspend fun subscribe(podcast: PodcastSearchResult) = io { dao.insertPodcasts(listOf(PodcastEntity.from(podcast))) }
@@ -69,6 +72,12 @@ class KansoRepository private constructor(context: Context) {
     }
     suspend fun createFolder(name: String) = io { dao.insertFolders(listOf(FolderEntity(name.trim()))) }
     suspend fun setFolder(feedUrl: String, folder: String?) = io { dao.setFolder(feedUrl, folder) }
+    suspend fun renameFolder(from: String, to: String) = io { dao.renameFolder(from, to.trim()) }
+    /** Current folder layout, to undo an organize. */
+    suspend fun folderLayout(): Pair<List<String>, Map<String, String?>> = io { dao.folderRows().map { it.name } to dao.podcastList().associate { it.feedUrl to it.folder } }
+    suspend fun applyFolderLayout(folders: List<String>, assignments: Map<String, String?>) = io { dao.applyFolderLayout(folders, assignments) }
+    suspend fun deleteFolder(name: String) = io { dao.deleteFolder(name) }
+    suspend fun groupIntoFolder(name: String, feedUrls: List<String>) = io { dao.groupIntoFolder(name.trim(), feedUrls) }
     suspend fun setAutoDownloadCount(feedUrl: String, count: Int?) = io { dao.setAutoDownloadCount(feedUrl, count) }
 
     // Episodes
@@ -96,7 +105,7 @@ class KansoRepository private constructor(context: Context) {
 
     suspend fun saveFeed(feed: PodcastFeed): List<String> = io {
         val url = feed.podcast.feedUrl
-        feed.podcast.let { dao.fillPodcastMetadata(url, it.title, it.author, it.artworkUrl, FeedParser.IMPORTED_AUTHOR) }
+        feed.podcast.let { dao.fillPodcastMetadata(url, it.title, it.author, it.artworkUrl, FeedParser.IMPORTED_AUTHOR, it.genre.takeIf { g -> g != "Podcast" }.orEmpty()) }
         val entities = feed.episodes.mapIndexed { i, e -> EpisodeEntity(e.id, url, e.title, e.description, e.audioUrl, e.published, e.publishedAt, e.duration, e.artworkUrl, i, chaptersUrl = e.chaptersUrl, transcriptUrl = e.transcriptUrl, transcriptType = e.transcriptType) }
         val rowIds = dao.insertEpisodes(entities)
         dao.updateMetadata(entities.map { EpisodeMetadata(it.id, it.podcastFeedUrl, it.title, it.description, it.audioUrl, it.published, it.publishedAt, it.duration, it.artworkUrl, it.sortIndex, it.chaptersUrl, it.transcriptUrl, it.transcriptType) })
@@ -110,10 +119,14 @@ class KansoRepository private constructor(context: Context) {
     }
 
     suspend fun setProgress(id: String, ms: Long) = io { dao.setProgress(id, ms, System.currentTimeMillis()) }
-    suspend fun markFinished(id: String) = io { dao.markFinished(id, app.getSharedPreferences("automation", 0).getBoolean("archive_finished", true)) }
+    suspend fun markFinished(id: String) = io {
+        val global = app.getSharedPreferences("automation", 0).getBoolean("archive_finished", true)
+        dao.markFinished(id, dao.podcastForEpisode(id)?.autoArchive ?: global)
+    }
     suspend fun setListened(id: String, value: Boolean) = io { dao.setListened(id, value) }
     suspend fun setFavorite(id: String, value: Boolean) = io { dao.setFavorite(id, value) }
     suspend fun setArchived(id: String, value: Boolean) = io { dao.setArchived(id, value) }
+    suspend fun bulkEpisodes(ids: Collection<String>, archive: Boolean?, markListened: Boolean = false) = io { dao.bulkEpisodes(ids.toList(), archive, markListened) }
     suspend fun playedNonFavoriteIds() = io { dao.playedNonFavoriteIds() }
 
     val history: Flow<List<EpisodeRow>> = gated { dao.history() }
