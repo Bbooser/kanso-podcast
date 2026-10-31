@@ -85,6 +85,9 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
     /** Applies the plan and returns the previous layout for "Deshacer". */
     suspend fun organize(plan: FolderPlan): Pair<List<String>, Map<String, String?>> { val before = repo.folderLayout(); repo.applyFolderLayout(plan.folders, plan.assignments); return before }
     fun restore(layout: Pair<List<String>, Map<String, String?>>) = viewModelScope.launch { repo.applyFolderLayout(layout.first, layout.second) }
+    /** 0 = automático (lo que había antes: tantas columnas como quepan de ~104 dp); 2..5 = fijo. */
+    var columns by mutableIntStateOf(prefs.getInt("podcasts_columns", 0).let { if (it in 2..5) it else 0 }); private set
+    fun chooseColumns(value: Int) { columns = value; prefs.edit().putInt("podcasts_columns", value).apply() }
     fun chooseSort(value: PodcastSort) { sort = value; prefs.edit().putString("podcasts_sort", value.name).apply() }
     fun refreshAll() { androidx.work.WorkManager.getInstance(getApplication()).enqueue(androidx.work.OneTimeWorkRequestBuilder<com.kanso.podcast.data.AutomationWorker>().build()) }
 }
@@ -221,6 +224,18 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
                         DropdownMenuItem({ Text("Renombrar carpeta") }, onClick = { menu = false; renameTarget = folder }, leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) })
                         DropdownMenuItem({ Text("Eliminar carpeta") }, onClick = { menu = false; confirmDelete = true }, leadingIcon = { Icon(Icons.Outlined.FolderOff, null) })
                     }
+                    Text("Podcasts por fila", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(.55f))
+                    SingleChoiceSegmentedButtonRow(Modifier.padding(horizontal = 12.dp).widthIn(min = 260.dp)) {
+                        val options = listOf(0, 2, 3, 4, 5)
+                        options.forEachIndexed { i, n ->
+                            SegmentedButton(selected = vm.columns == n, onClick = { vm.chooseColumns(n) }, shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                                icon = {}, modifier = Modifier.semantics { contentDescription = if (n == 0) "Columnas automáticas" else "$n podcasts por fila" }) {
+                                Text(if (n == 0) "Auto" else "$n", maxLines = 1)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    HorizontalDivider()
                     if (folder == null) DropdownMenuItem({ Text("Organizar por categoría") }, onClick = { menu = false; organizing = true }, leadingIcon = { Icon(Icons.Outlined.Category, null) })
                     DropdownMenuItem({ Text("Actualizar todos los feeds") }, onClick = { menu = false; vm.refreshAll() }, leadingIcon = { Icon(Icons.Outlined.Sync, null) })
                 }
@@ -228,16 +243,18 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
         }
         if (loaded && all.isEmpty()) { EmptyState(Icons.Outlined.Podcasts, "Tu biblioteca está tranquila", "Encuentra podcasts para seguir en Descubrir.", "Ir a Descubrir", onDiscover); return@Column }
         if (folder != null && loaded && tiles.isEmpty()) { EmptyState(Icons.Outlined.Folder, "Carpeta vacía", "Mantén presionado un podcast y suéltalo sobre esta carpeta, o usa “Mover a carpeta…”."); return@Column }
-        LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding - 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        val dense = vm.columns >= 4
+        val gap = if (vm.columns == 5) 6.dp else if (dense) 8.dp else 10.dp
+        LazyVerticalGrid(if (vm.columns in 2..5) GridCells.Fixed(vm.columns) else GridCells.Adaptive(104.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding - 4.dp), horizontalArrangement = Arrangement.spacedBy(gap), verticalArrangement = Arrangement.spacedBy(gap)) {
             items(tiles, key = { it.key }) { tile ->
                 val tracked = Modifier.onGloballyPositioned { bounds[tile.key] = it.boundsInRoot() }
                     .then(if (dropKey == tile.key) Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(14.dp)) else Modifier)
                 when (tile) {
-                    is LibraryTile.Folder -> FolderTile(tile, tracked) { onOpenFolder(tile.name) }
+                    is LibraryTile.Folder -> FolderTile(tile, tracked, vm.columns == 5) { onOpenFolder(tile.name) }
                     is LibraryTile.Podcast -> {
                         val p = tile.podcast
                         val dragging = dragKey == tile.key
-                        PodcastTile(p, stats[p.feedUrl]?.newEpisodes ?: 0, tracked.zIndex(if (dragging) 1f else 0f).graphicsLayer {
+                        PodcastTile(p, stats[p.feedUrl]?.newEpisodes ?: 0, vm.columns == 5, tracked.zIndex(if (dragging) 1f else 0f).graphicsLayer {
                                 if (dragging) { translationX = dragDelta.x; translationY = dragDelta.y; scaleX = 1.08f; scaleY = 1.08f; alpha = .9f }
                             },
                             draggable = folder == null,
@@ -254,29 +271,31 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
 }
 }
 
-@Composable private fun NewBadge(count: Int, modifier: Modifier) {
-    if (count > 0) Surface(modifier, shape = CircleShape, color = MaterialTheme.colorScheme.secondary) {
+@Composable private fun NewBadge(count: Int, modifier: Modifier, tiny: Boolean = false) {
+    // At 5 per row there is no room for a number: just a dot (the tile's description still says how many).
+    if (count > 0 && tiny) Box(modifier.padding(2.dp).size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondary))
+    else if (count > 0) Surface(modifier, shape = CircleShape, color = MaterialTheme.colorScheme.secondary) {
         Text(if (count > 99) "99+" else "$count", Modifier.padding(horizontal = 6.dp, vertical = 1.dp), color = Color.White, style = MaterialTheme.typography.labelSmall)
     }
 }
 
-@Composable private fun FolderTile(tile: LibraryTile.Folder, modifier: Modifier, onClick: () -> Unit) {
+@Composable private fun FolderTile(tile: LibraryTile.Folder, modifier: Modifier, tiny: Boolean, onClick: () -> Unit) {
     val description = "Carpeta ${tile.name}, ${tile.podcasts.size} podcasts" + if (tile.newEpisodes > 0) ", ${tile.newEpisodes} episodios nuevos" else ""
-    Box(modifier.aspectRatio(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClickLabel = "Abrir carpeta", onClick = onClick).semantics(mergeDescendants = true) { contentDescription = description }.padding(8.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Box(modifier.aspectRatio(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClickLabel = "Abrir carpeta", onClick = onClick).semantics(mergeDescendants = true) { contentDescription = description }.padding(if (tiny) 4.dp else 8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(if (tiny) 2.dp else 4.dp)) {
             listOf(0, 2).forEach { start -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { (start..start + 1).forEach { i ->
                 Box(Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.onSurface.copy(.06f))) { tile.podcasts.getOrNull(i)?.artworkUrl?.let { AsyncImage(it, null, Modifier.fillMaxSize()) } }
             } } }
         }
         Surface(Modifier.align(Alignment.BottomStart), color = MaterialTheme.colorScheme.primary.copy(.85f), shape = RoundedCornerShape(8.dp)) {
-            Text("${tile.name} · ${tile.podcasts.size}", Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(if (tiny) tile.name else "${tile.name} · ${tile.podcasts.size}", Modifier.padding(horizontal = if (tiny) 3.dp else 6.dp, vertical = if (tiny) 1.dp else 2.dp), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        NewBadge(tile.newEpisodes, Modifier.align(Alignment.TopEnd))
+        NewBadge(tile.newEpisodes, Modifier.align(Alignment.TopEnd), tiny)
     }
 }
 
 /** Tap opens; long-press without moving opens the menu; long-press and drag moves it onto another tile (root only). */
-@Composable private fun PodcastTile(podcast: PodcastEntity, newEpisodes: Int, modifier: Modifier, draggable: Boolean, onDragStart: (androidx.compose.ui.geometry.Offset) -> Unit, onDrag: (androidx.compose.ui.geometry.Offset) -> Unit,
+@Composable private fun PodcastTile(podcast: PodcastEntity, newEpisodes: Int, tiny: Boolean, modifier: Modifier, draggable: Boolean, onDragStart: (androidx.compose.ui.geometry.Offset) -> Unit, onDrag: (androidx.compose.ui.geometry.Offset) -> Unit,
                                     onDragEnd: (moved: Boolean) -> Boolean, onOpen: () -> Unit, onRemove: () -> Unit, onMoveToFolder: () -> Unit, onLeaveFolder: (() -> Unit)?, onFavorite: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -294,12 +313,12 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
             .semantics { onLongClick("Opciones") { menu = true; true } },
             contentAlignment = Alignment.Center) {
             if (podcast.artworkUrl != null) AsyncImage(podcast.artworkUrl, podcast.title, Modifier.fillMaxSize())
-            else Text(podcast.title, Modifier.padding(8.dp), style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = 4)
+            else Text(podcast.title, Modifier.padding(if (tiny) 3.dp else 8.dp), style = if (tiny) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = if (tiny) 3 else 4, overflow = TextOverflow.Ellipsis)
         }
-        if (podcast.isFavorite) Surface(Modifier.align(Alignment.TopStart).padding(6.dp), shape = CircleShape, color = MaterialTheme.colorScheme.background.copy(.85f)) {
-            Icon(Icons.Default.Star, "Favorito", Modifier.padding(3.dp).size(14.dp), tint = MaterialTheme.colorScheme.secondary)
+        if (podcast.isFavorite) Surface(Modifier.align(Alignment.TopStart).padding(if (tiny) 3.dp else 6.dp), shape = CircleShape, color = MaterialTheme.colorScheme.background.copy(.85f)) {
+            Icon(Icons.Default.Star, "Favorito", Modifier.padding(if (tiny) 1.dp else 3.dp).size(if (tiny) 10.dp else 14.dp), tint = MaterialTheme.colorScheme.secondary)
         }
-        NewBadge(newEpisodes, Modifier.align(Alignment.TopEnd).padding(4.dp))
+        NewBadge(newEpisodes, Modifier.align(Alignment.TopEnd).padding(if (tiny) 2.dp else 4.dp), tiny)
         DropdownMenu(menu, { menu = false }) {
             Text(podcast.title, Modifier.padding(horizontal = 16.dp, vertical = 6.dp).widthIn(max = 240.dp), style = MaterialTheme.typography.labelLarge, maxLines = 2)
             DropdownMenuItem({ Text(if (podcast.isFavorite) "Quitar de favoritos" else "Marcar como favorito") }, onClick = { menu = false; onFavorite() },

@@ -51,7 +51,7 @@ sealed interface LibraryTile {
 }
 
 /**
- * Root of the grid. Favorite podcasts stay pinned first; folders sit among the other podcasts by the same criterion
+ * Root of the grid, strictly: folders, then favorite podcasts, then the rest; each group ordered by [sort]
  * (a folder counts as its newest episode / any new episode / its name). Podcasts inside a folder use [sortPodcasts].
  */
 fun libraryTiles(podcasts: List<PodcastEntity>, folders: List<String>, stats: Map<String, PodcastLibraryStat>, sort: PodcastSort, locale: Locale = Locale("es", "MX")): List<LibraryTile> {
@@ -67,7 +67,7 @@ fun libraryTiles(podcasts: List<PodcastEntity>, folders: List<String>, stats: Ma
     val recent = compareByDescending<LibraryTile> { latest(it) }.then(byName)
     val cmp = when (sort) { PodcastSort.RECENT -> recent; PodcastSort.NEW_EPISODES -> compareByDescending<LibraryTile> { hasNew(it) }.then(recent); PodcastSort.NAME -> byName.thenBy { it.key } }
     val (favs, rest) = loose.partition { it.isFavorite }
-    return favs.map { LibraryTile.Podcast(it) } + (rest.map { LibraryTile.Podcast(it) } + folderTiles).sortedWith(cmp)
+    return folderTiles.sortedWith(cmp) + favs.map { LibraryTile.Podcast(it) } + rest.map { LibraryTile.Podcast(it) }
 }
 
 /** Name for a folder made by dropping [a] onto [b]: their shared category, else "Carpeta"; numbered if taken. */

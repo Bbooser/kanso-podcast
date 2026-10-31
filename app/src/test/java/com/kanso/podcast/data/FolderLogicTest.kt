@@ -12,9 +12,15 @@ class FolderLogicTest {
     private fun stat(t: String, latest: Long, new: Int) = PodcastLibraryStat("https://$t.mx", latest, new)
     private fun keys(s: PodcastSort) = libraryTiles(pods, listOf("Noticias"), stats, s).map { when (it) { is LibraryTile.Folder -> "[${it.name}]"; is LibraryTile.Podcast -> it.podcast.title } }
 
-    @Test fun favoritesPinnedFoldersMixedByName() = assertEquals(listOf("Alfa", "Delta", "[Noticias]", "Omega", "Zeta"), keys(PodcastSort.NAME))
-    @Test fun folderUsesNewestMember() = assertEquals(listOf("Alfa", "[Noticias]", "Delta", "Zeta", "Omega"), keys(PodcastSort.RECENT))
-    @Test fun folderWithNewEpisodesFirst() = assertEquals(listOf("Alfa", "[Noticias]", "Delta", "Zeta", "Omega"), keys(PodcastSort.NEW_EPISODES))
+    private val many = listOf("Noticias", "Archivo", "Vacía")
+    private fun keysMany(s: PodcastSort) = libraryTiles(pods + p("Kappa", "Archivo"), many, stats, s).map { when (it) { is LibraryTile.Folder -> "[${it.name}]"; is LibraryTile.Podcast -> it.podcast.title } }
+
+    @Test fun foldersThenFavoritesThenRestByName() = assertEquals(listOf("[Archivo]", "[Noticias]", "[Vacía]", "Alfa", "Delta", "Omega", "Zeta"), keysMany(PodcastSort.NAME))
+    @Test fun foldersByNewestMemberThenFavorites() = assertEquals(listOf("[Archivo]", "[Noticias]", "[Vacía]", "Alfa", "Delta", "Zeta", "Omega"), keysMany(PodcastSort.RECENT)) // Kappa: sin episodios, cuenta su fecha de seguimiento (ahora)
+    @Test fun foldersWithNewEpisodesFirst() = assertEquals(listOf("[Noticias]", "[Archivo]", "[Vacía]", "Alfa", "Delta", "Zeta", "Omega"), keysMany(PodcastSort.NEW_EPISODES))
+    @Test fun favoriteNeverAboveFolder() = PodcastSort.entries.forEach { s ->
+        val k = keys(s); assertEquals("[Noticias]", k.first()); assertEquals("Alfa", k[1])
+    }
 
     @Test fun folderContentsSortedWithFavoritesFirstAndCountsNew() {
         val f = libraryTiles(pods, listOf("Noticias"), stats, PodcastSort.RECENT).filterIsInstance<LibraryTile.Folder>().single()
