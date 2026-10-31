@@ -19,7 +19,7 @@ object FeedParser {
         var title = ""; var description = ""; var audio = ""; var guid = ""
         var date = ""; var duration = ""; var image: String? = null
         var chapters: String? = null; var transcript: String? = null; var transcriptType: String? = null; var transcriptRank = 99
-        var channelTitle = ""; var channelAuthor = ""; var channelImage: String? = null
+        var channelTitle = ""; var channelAuthor = ""; var channelImage: String? = null; var channelCategory = ""
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT && episodes.size < 100) {
             when (event) {
@@ -33,6 +33,7 @@ object FeedParser {
                     else if (!inItem) when {
                         prefix.isEmpty() && name == "title" && channelTitle.isBlank() && parser.depth <= 3 -> channelTitle = parser.nextText().trim()
                         prefix == "itunes" && name == "author" && channelAuthor.isBlank() -> channelAuthor = parser.nextText().trim()
+                        prefix == "itunes" && name == "category" && channelCategory.isBlank() && parser.depth == 3 -> channelCategory = parser.getAttributeValue(null, "text")?.trim().orEmpty()
                         prefix == "itunes" && name == "image" && channelImage == null -> channelImage = parser.getAttributeValue(null, "href")?.takeIf { it.isNotBlank() }
                         prefix.isEmpty() && name == "url" && channelImage == null && parser.depth == 4 -> channelImage = parser.nextText().trim().takeIf { it.isNotBlank() }
                     }
@@ -71,6 +72,7 @@ object FeedParser {
             title = if ((podcast.title.isBlank() || podcast.title == podcast.feedUrl) && channelTitle.isNotBlank()) channelTitle else podcast.title,
             author = if (placeholder && channelAuthor.isNotBlank()) channelAuthor else podcast.author,
             artworkUrl = podcast.artworkUrl ?: channelImage,
+            genre = if ((podcast.genre.isBlank() || podcast.genre == "Podcast") && channelCategory.isNotBlank()) channelCategory else podcast.genre,
         )
         return PodcastFeed(enriched, episodes.map { if (it.artworkUrl == null && enriched.artworkUrl != null) it.copy(artworkUrl = enriched.artworkUrl) else it })
     }

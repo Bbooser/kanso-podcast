@@ -31,11 +31,24 @@ interface KansoDao {
     suspend fun setPodcastSettings(feedUrl: String, speed: Float?, intro: Int, outro: Int, sort: String, notify: Boolean)
     @Query("SELECT * FROM podcasts WHERE feedUrl = :feedUrl") suspend fun podcastOnce(feedUrl: String): PodcastEntity?
     @Query("SELECT p.* FROM podcasts p JOIN episodes e ON e.podcastFeedUrl = p.feedUrl WHERE e.id = :episodeId") suspend fun podcastForEpisode(episodeId: String): PodcastEntity?
-    @Query("UPDATE podcasts SET title = CASE WHEN title = '' OR title = feedUrl THEN :title ELSE title END, author = CASE WHEN author = '' OR author = :placeholder THEN :author ELSE author END, artworkUrl = COALESCE(artworkUrl, :artwork) WHERE feedUrl = :feedUrl")
-    suspend fun fillPodcastMetadata(feedUrl: String, title: String, author: String, artwork: String?, placeholder: String)
+    @Query("UPDATE podcasts SET title = CASE WHEN title = '' OR title = feedUrl THEN :title ELSE title END, author = CASE WHEN author = '' OR author = :placeholder THEN :author ELSE author END, artworkUrl = COALESCE(artworkUrl, :artwork), genre = CASE WHEN (genre = '' OR genre = 'Podcast') AND :genre <> '' THEN :genre ELSE genre END WHERE feedUrl = :feedUrl")
+    suspend fun fillPodcastMetadata(feedUrl: String, title: String, author: String, artwork: String?, placeholder: String, genre: String)
     @Query("SELECT COUNT(*) FROM episodes WHERE podcastFeedUrl = :feedUrl") suspend fun episodeCount(feedUrl: String): Int
     @Query("SELECT name FROM folders ORDER BY name COLLATE NOCASE") fun folders(): Flow<List<String>>
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertFolders(items: List<FolderEntity>)
+    @Query("DELETE FROM folders WHERE name = :name") suspend fun deleteFolderRow(name: String)
+    @Query("UPDATE podcasts SET folder = :to WHERE folder = :from") suspend fun reassignFolder(from: String, to: String?)
+    /** Renaming onto an existing name merges both folders. */
+    @Transaction suspend fun renameFolder(from: String, to: String) { if (from == to) return; insertFolders(listOf(FolderEntity(to))); reassignFolder(from, to); deleteFolderRow(from) }
+    /** Podcasts go back to the root; nothing is unsubscribed. */
+    @Transaction suspend fun deleteFolder(name: String) { reassignFolder(name, null); deleteFolderRow(name) }
+    @Query("SELECT * FROM folders") suspend fun folderRows(): List<FolderEntity>
+    @Query("DELETE FROM folders") suspend fun deleteAllFolders()
+    /** Applies a folder layout (organize by category, or its undo) atomically: [folders] becomes the whole folder list. */
+    @Transaction suspend fun applyFolderLayout(folders: List<String>, assignments: Map<String, String?>) {
+        deleteAllFolders(); insertFolders(folders.map(::FolderEntity)); assignments.forEach { (feed, folder) -> setFolder(feed, folder) }
+    }
+    @Transaction suspend fun groupIntoFolder(name: String, feedUrls: List<String>) { insertFolders(listOf(FolderEntity(name))); feedUrls.forEach { setFolder(it, name) } }
 
     // Episodes
     @Query("SELECT * FROM episodes WHERE podcastFeedUrl = :feedUrl ORDER BY publishedAt DESC, sortIndex ASC") fun episodesFor(feedUrl: String): Flow<List<EpisodeEntity>>

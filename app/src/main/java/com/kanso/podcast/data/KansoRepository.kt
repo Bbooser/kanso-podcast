@@ -72,6 +72,12 @@ class KansoRepository private constructor(context: Context) {
     }
     suspend fun createFolder(name: String) = io { dao.insertFolders(listOf(FolderEntity(name.trim()))) }
     suspend fun setFolder(feedUrl: String, folder: String?) = io { dao.setFolder(feedUrl, folder) }
+    suspend fun renameFolder(from: String, to: String) = io { dao.renameFolder(from, to.trim()) }
+    /** Current folder layout, to undo an organize. */
+    suspend fun folderLayout(): Pair<List<String>, Map<String, String?>> = io { dao.folderRows().map { it.name } to dao.podcastList().associate { it.feedUrl to it.folder } }
+    suspend fun applyFolderLayout(folders: List<String>, assignments: Map<String, String?>) = io { dao.applyFolderLayout(folders, assignments) }
+    suspend fun deleteFolder(name: String) = io { dao.deleteFolder(name) }
+    suspend fun groupIntoFolder(name: String, feedUrls: List<String>) = io { dao.groupIntoFolder(name.trim(), feedUrls) }
     suspend fun setAutoDownloadCount(feedUrl: String, count: Int?) = io { dao.setAutoDownloadCount(feedUrl, count) }
 
     // Episodes
@@ -99,7 +105,7 @@ class KansoRepository private constructor(context: Context) {
 
     suspend fun saveFeed(feed: PodcastFeed): List<String> = io {
         val url = feed.podcast.feedUrl
-        feed.podcast.let { dao.fillPodcastMetadata(url, it.title, it.author, it.artworkUrl, FeedParser.IMPORTED_AUTHOR) }
+        feed.podcast.let { dao.fillPodcastMetadata(url, it.title, it.author, it.artworkUrl, FeedParser.IMPORTED_AUTHOR, it.genre.takeIf { g -> g != "Podcast" }.orEmpty()) }
         val entities = feed.episodes.mapIndexed { i, e -> EpisodeEntity(e.id, url, e.title, e.description, e.audioUrl, e.published, e.publishedAt, e.duration, e.artworkUrl, i, chaptersUrl = e.chaptersUrl, transcriptUrl = e.transcriptUrl, transcriptType = e.transcriptType) }
         val rowIds = dao.insertEpisodes(entities)
         dao.updateMetadata(entities.map { EpisodeMetadata(it.id, it.podcastFeedUrl, it.title, it.description, it.audioUrl, it.published, it.publishedAt, it.duration, it.artworkUrl, it.sortIndex, it.chaptersUrl, it.transcriptUrl, it.transcriptType) })

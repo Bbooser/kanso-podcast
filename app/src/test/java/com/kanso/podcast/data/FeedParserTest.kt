@@ -18,6 +18,8 @@ class FeedParserTest {
     <title>Café Kanso</title>
     <itunes:author>Pablo</itunes:author>
     <itunes:image href="https://ejemplo.mx/portada.jpg"/>
+    <itunes:category text="Society &amp; Culture"><itunes:category text="Documentary"/></itunes:category>
+    <itunes:category text="News"/>
     <item>
       <title>Episodio 2</title>
       <description><![CDATA[<p>Hola <b>mundo</b></p>]]></description>
@@ -67,6 +69,8 @@ class FeedParserTest {
         assertEquals("Pablo", feed.podcast.author)
         assertEquals("https://ejemplo.mx/portada.jpg", feed.podcast.artworkUrl)
         assertEquals("https://ejemplo.mx/portada.jpg", feed.episodes[0].artworkUrl)
+        assertEquals("Society & Culture", feed.podcast.genre)
+        assertEquals("Sociedad y cultura", localizedCategory(feed.podcast.genre))
     }
 
     @Test fun keepsExistingMetadata() {
