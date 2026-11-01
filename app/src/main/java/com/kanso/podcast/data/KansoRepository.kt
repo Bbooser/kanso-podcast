@@ -204,6 +204,7 @@ class KansoRepository private constructor(context: Context) {
     suspend fun downloadRows() = io { dao.downloadRows() }
     val downloadsFlow: Flow<List<DownloadEntity>> = gated { dao.downloadsFlow() }
 
+    suspend fun listeningSignals() = dao.listeningSignals()
     companion object {
         @Volatile private var instance: KansoRepository? = null
         fun get(context: Context): KansoRepository = instance ?: synchronized(this) { instance ?: KansoRepository(context).also { instance = it } }

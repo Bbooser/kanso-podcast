@@ -69,4 +69,14 @@ class FolderDaoTest {
         assertEquals(mapOf("https://a.mx" to "Arrastrada", "https://b.mx" to "Arrastrada", "https://c.mx" to "Tecnología"), doc.entries.associate { it.feedUrl to it.folder })
         assertEquals(setOf("Arrastrada", "Tecnología", "Vacía"), doc.folders.toSet())
     }
+
+    @Test fun listeningSignalsJoinStatsAndFavorites() = runBlocking {
+        dao.insertPodcasts(listOf(p("a"), p("b")))
+        dao.setFavorites(listOf("https://b.mx"), true)
+        dao.ensurePodcastListening("https://a.mx"); dao.addPodcastListening("https://a.mx", 90_000)
+        val s = dao.listeningSignals().associateBy { it.feedUrl }
+        assertEquals(90_000L, s.getValue("https://a.mx").listenedMs)
+        assertEquals(0L, s.getValue("https://b.mx").listenedMs)
+        assertTrue(s.getValue("https://b.mx").favorite)
+    }
 }

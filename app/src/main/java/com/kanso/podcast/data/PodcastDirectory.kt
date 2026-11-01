@@ -35,6 +35,13 @@ class PodcastDirectory {
         ids.mapNotNull { id -> byId[id]?.let(::fromApple) }
     }
 
+    /** Podcasts for a genre name (Search API). Only the genre term and country are sent. */
+    suspend fun byGenre(genre: String, country: String, limit: Int = 25): List<PodcastSearchResult> = withContext(Dispatchers.IO) {
+        val term = URLEncoder.encode(genre, Charsets.UTF_8.name())
+        val results = JSONObject(get("https://itunes.apple.com/search?media=podcast&entity=podcast&limit=$limit&country=$country&term=$term")).getJSONArray("results")
+        (0 until results.length()).map { results.getJSONObject(it) }.filter { it.optString("feedUrl").isNotBlank() }.map(::fromApple)
+    }
+
     private fun fromApple(item: JSONObject) = PodcastSearchResult(
         id = item.optLong("collectionId").toString(),
         title = item.optString("collectionName", "Podcast"),
@@ -105,7 +112,7 @@ class PodcastDirectory {
     private fun get(url: String): String = open(url).inputStream.bufferedReader().use { it.readText() }
     private fun open(url: String) = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
         connectTimeout = 12_000; readTimeout = 15_000; instanceFollowRedirects = true
-        setRequestProperty("User-Agent", "KansoPodcast/0.4.0 (Android)")
+        setRequestProperty("User-Agent", "KansoPodcast/0.4.1 (Android)")
         if (responseCode !in 200..299) throw IllegalStateException("El servidor respondió $responseCode")
     }
 }

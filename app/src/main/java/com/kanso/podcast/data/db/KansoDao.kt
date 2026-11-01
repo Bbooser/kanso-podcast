@@ -153,6 +153,8 @@ interface KansoDao {
     @Query("SELECT * FROM listening_days WHERE day >= :since ORDER BY day") fun daysSince(since: String): Flow<List<ListeningDay>>
     @Query("INSERT OR IGNORE INTO podcast_listening(feedUrl, listenedMs) VALUES(:feedUrl, 0)") suspend fun ensurePodcastListening(feedUrl: String)
     @Query("UPDATE podcast_listening SET listenedMs = listenedMs + :ms WHERE feedUrl = :feedUrl") suspend fun addPodcastListening(feedUrl: String, ms: Long)
+    @Query("SELECT p.feedUrl, p.id, p.title, p.genre, COALESCE(l.listenedMs, 0) AS listenedMs, p.isFavorite AS favorite, COALESCE((SELECT MAX(e.lastPlayedAt) FROM episodes e WHERE e.podcastFeedUrl = p.feedUrl), 0) AS lastPlayedAt FROM podcasts p LEFT JOIN podcast_listening l ON l.feedUrl = p.feedUrl")
+    suspend fun listeningSignals(): List<com.kanso.podcast.data.ListeningSignal>
     @Query("SELECT l.feedUrl, p.title, p.artworkUrl, l.listenedMs FROM podcast_listening l LEFT JOIN podcasts p ON p.feedUrl = l.feedUrl WHERE l.listenedMs > 0 ORDER BY l.listenedMs DESC LIMIT :limit")
     fun topPodcasts(limit: Int): Flow<List<TopPodcastRow>>
 
