@@ -29,6 +29,7 @@ class KansoRepository private constructor(context: Context) {
     private val app = context.applicationContext
     private val dao = KansoDatabase.get(app).dao()
     private val directory = PodcastDirectory()
+    val backups by lazy { BackupManager(app, dao) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** The one-time SharedPreferences import runs before anything reads the database. */
     private val ready = scope.async { LegacyMigration.runIfNeeded(app, dao) }
@@ -44,6 +45,11 @@ class KansoRepository private constructor(context: Context) {
     val podcastLibraryStats: Flow<List<com.kanso.podcast.data.db.PodcastLibraryStat>> = gated { dao.podcastLibraryStats() }
     suspend fun setPodcastFavorite(feedUrl: String, value: Boolean) = io { dao.setPodcastFavorite(feedUrl, value) }
     suspend fun setPodcastAutoArchive(feedUrl: String, value: Boolean?) = io { dao.setPodcastAutoArchive(feedUrl, value) }
+    suspend fun setPodcastAutoQueue(feedUrl: String, value: String?) = io { dao.setPodcastAutoQueue(feedUrl, value) }
+    suspend fun addAutoQueue(items: List<com.kanso.podcast.data.db.AutoQueuePending>) = io { dao.insertAutoQueue(items) }
+    fun autoQueuePending() = dao.autoQueuePendingFlow()
+    suspend fun clearAutoQueue(ids: List<String>) = io { dao.deleteAutoQueue(ids) }
+    suspend fun searchLibrary(text: String) = LibrarySearch.ftsQuery(text)?.let { q -> io { dao.searchLibrary(q) } } ?: emptyList()
     fun podcast(feedUrl: String): Flow<PodcastEntity?> = gated { dao.podcast(feedUrl) }
     suspend fun podcastList() = io { dao.podcastList() }
     suspend fun subscribe(podcast: PodcastSearchResult) = io { dao.insertPodcasts(listOf(PodcastEntity.from(podcast))) }
@@ -58,7 +64,10 @@ class KansoRepository private constructor(context: Context) {
         val fresh = io {
             val existing = dao.podcastList().map { Opml.dedupeKey(it.feedUrl) }.toSet()
             val fresh = doc.entries.filter { Opml.dedupeKey(it.feedUrl) !in existing }
-            dao.insertFolders(fresh.mapNotNull { it.folder?.trim()?.takeIf(String::isNotBlank) }.distinct().map(::FolderEntity))
+            dao.insertFolders((doc.folders + fresh.mapNotNull { it.folder }).mapNotNull { it.trim().takeIf(String::isNotBlank) }.distinct().map(::FolderEntity))
+            // Podcasts you already follow and that are not in a folder yet take the folder from the file.
+            val byKey = dao.podcastList().associateBy { Opml.dedupeKey(it.feedUrl) }
+            doc.entries.forEach { e -> val f = e.folder?.trim()?.takeIf(String::isNotBlank) ?: return@forEach; byKey[Opml.dedupeKey(e.feedUrl)]?.takeIf { it.folder == null }?.let { dao.setFolder(it.feedUrl, f) } }
             dao.insertPodcasts(fresh.map { PodcastEntity(it.feedUrl, it.feedUrl.hashCode().toString(), it.title, FeedParser.IMPORTED_AUTHOR, null, "Podcast", it.folder?.trim()?.takeIf(String::isNotBlank)) })
             fresh
         }
@@ -77,6 +86,8 @@ class KansoRepository private constructor(context: Context) {
     suspend fun folderLayout(): Pair<List<String>, Map<String, String?>> = io { dao.folderRows().map { it.name } to dao.podcastList().associate { it.feedUrl to it.folder } }
     suspend fun applyFolderLayout(folders: List<String>, assignments: Map<String, String?>) = io { dao.applyFolderLayout(folders, assignments) }
     suspend fun deleteFolder(name: String) = io { dao.deleteFolder(name) }
+    suspend fun setFolders(feeds: List<String>, folder: String?) = io { dao.setFolders(feeds, folder) }
+    suspend fun setFavorites(feeds: List<String>, value: Boolean) = io { dao.setFavorites(feeds, value) }
     suspend fun groupIntoFolder(name: String, feedUrls: List<String>) = io { dao.groupIntoFolder(name.trim(), feedUrls) }
     suspend fun setAutoDownloadCount(feedUrl: String, count: Int?) = io { dao.setAutoDownloadCount(feedUrl, count) }
 

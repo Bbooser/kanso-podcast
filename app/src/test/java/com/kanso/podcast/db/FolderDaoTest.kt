@@ -48,4 +48,25 @@ class FolderDaoTest {
         val back = Opml.read(xml.byteInputStream()).entries.associate { it.feedUrl to it.folder }
         assertEquals(mapOf("https://a.mx" to "Noticias", "https://b.mx" to null, "https://c.mx" to "Noticias"), back)
     }
+
+    @Test fun bulkMoveLeaveAndFavoriteAffectOnlySelection() = runBlocking {
+        dao.insertPodcasts(listOf(p("a"), p("b"), p("c")))
+        dao.groupIntoFolder("Nueva", listOf("https://a.mx", "https://b.mx"))
+        assertEquals(listOf("Nueva", "Nueva", null), dao.podcastList().map { it.folder })
+        dao.setFavorites(listOf("https://a.mx", "https://c.mx"), true)
+        assertEquals(listOf(true, false, true), dao.podcastList().map { it.isFavorite })
+        dao.setFolders(listOf("https://a.mx", "https://b.mx"), null)
+        assertTrue(dao.podcastList().all { it.folder == null })
+        assertEquals(listOf("Nueva"), dao.folderRows().map { it.name }) // the folder itself stays until deleted
+    }
+
+    @Test fun opmlRoundTripKeepsEveryFolder() = runBlocking {
+        dao.insertPodcasts(listOf(p("a"), p("b"), p("c")))
+        dao.groupIntoFolder("Arrastrada", listOf("https://a.mx", "https://b.mx"))
+        dao.applyFolderLayout(listOf("Arrastrada", "Tecnología", "Vacía"), mapOf("https://c.mx" to "Tecnología"))
+        val xml = Opml.export(dao.podcastList().map { OpmlEntry(it.feedUrl, it.title, it.folder) }, folders = dao.folderRows().map { it.name })
+        val doc = Opml.read(xml.byteInputStream())
+        assertEquals(mapOf("https://a.mx" to "Arrastrada", "https://b.mx" to "Arrastrada", "https://c.mx" to "Tecnología"), doc.entries.associate { it.feedUrl to it.folder })
+        assertEquals(setOf("Arrastrada", "Tecnología", "Vacía"), doc.folders.toSet())
+    }
 }

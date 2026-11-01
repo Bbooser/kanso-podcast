@@ -10,7 +10,7 @@ import java.net.URI
 data class OpmlEntry(val feedUrl: String, val title: String, val folder: String? = null)
 
 /** Result of reading an OPML file: unique valid entries plus counts of what was dropped. */
-data class OpmlDocument(val entries: List<OpmlEntry>, val duplicates: Int, val invalid: Int)
+data class OpmlDocument(val entries: List<OpmlEntry>, val duplicates: Int, val invalid: Int, val folders: List<String> = entries.mapNotNull { it.folder }.distinct())
 
 /**
  * OPML import/export tolerant of the files written by Pocket Casts, AntennaPod, Podcast Addict, Apple Podcasts,
@@ -29,6 +29,7 @@ object Opml {
         var duplicates = 0; var invalid = 0; var sawOpml = false
         // One slot per open <outline>: the folder label it opens, or null for feeds/untitled groups.
         val stack = ArrayDeque<String?>()
+        val folderNames = LinkedHashSet<String>()
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
@@ -50,13 +51,13 @@ object Opml {
                         stack.addLast(null)
                     } else if (type == "rss") { invalid++; stack.addLast(null) }
                     // Pocket Casts wraps everything in <outline text="feeds">: a top-level generic wrapper is not a folder.
-                    else stack.addLast(label?.takeUnless { stack.isEmpty() && it.lowercase() in WRAPPERS })
+                    else stack.addLast(label?.takeUnless { stack.isEmpty() && it.lowercase() in WRAPPERS }?.also { folderNames.add(it) })
                 }
             } else if (event == XmlPullParser.END_TAG && parser.name.equals("outline", true)) stack.removeLastOrNull()
             event = parser.next()
         }
         if (!sawOpml) throw IllegalArgumentException("El archivo no es OPML")
-        return OpmlDocument(entries.values.toList(), duplicates, invalid)
+        return OpmlDocument(entries.values.toList(), duplicates, invalid, (folderNames + entries.values.mapNotNull { it.folder }).distinct())
     }
 
     /** Backwards-compatible flat parse. */
@@ -91,7 +92,8 @@ object Opml {
     fun create(items: List<PodcastSearchResult>): String = export(items.map { OpmlEntry(it.feedUrl, it.title) })
 
     /** OPML 2.0 with one nested outline per folder, the layout Pocket Casts and AntennaPod read back. */
-    fun export(entries: List<OpmlEntry>, now: java.util.Date = java.util.Date()): String = buildString {
+    /** Every folder becomes an outline group, including empty ones in [folders]; podcasts outside folders stay at the top level. */
+    fun export(entries: List<OpmlEntry>, now: java.util.Date = java.util.Date(), folders: List<String> = emptyList()): String = buildString {
         append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<opml version=\"2.0\">\n  <head>\n    <title>Kanso Podcast</title>\n")
         append("    <dateCreated>").append(java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss Z", java.util.Locale.US).format(now)).append("</dateCreated>\n  </head>\n  <body>\n")
         fun feed(e: OpmlEntry, indent: String) { append(indent).append("<outline type=\"rss\" text=\"").append(escape(e.title)).append("\" title=\"").append(escape(e.title)).append("\" xmlUrl=\"").append(escape(e.feedUrl)).append("\"/>\n") }
@@ -101,6 +103,10 @@ object Opml {
             append("    <outline text=\"").append(escape(folder)).append("\" title=\"").append(escape(folder)).append("\">\n")
             items.forEach { feed(it, "      ") }
             append("    </outline>\n")
+        }
+        val used = entries.mapNotNull { it.folder?.trim()?.lowercase() }.toSet()
+        folders.map { it.trim() }.filter { it.isNotBlank() && it.lowercase() !in used }.distinctBy { it.lowercase() }.sorted().forEach { f ->
+            append("    <outline text=\"").append(escape(f)).append("\" title=\"").append(escape(f)).append("\"/>\n")
         }
         append("  </body>\n</opml>\n")
     }

@@ -3,6 +3,8 @@ package com.kanso.podcast.data.db
 import androidx.room.ColumnInfo
 import androidx.room.Embedded
 import androidx.room.Entity
+import androidx.room.Fts4
+import androidx.room.FtsOptions
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.kanso.podcast.model.FeedEpisode
@@ -32,6 +34,8 @@ data class PodcastEntity(
     @ColumnInfo(defaultValue = "0") val isFavorite: Boolean = false,
     /** null = use the global "Archivar al terminar" setting. */
     @ColumnInfo(defaultValue = "NULL") val autoArchive: Boolean? = null,
+    /** New episodes to the queue: null = global default, else NONE / START / END. */
+    @ColumnInfo(defaultValue = "NULL") val autoQueue: String? = null,
 ) {
     fun toModel() = PodcastSearchResult(id, title, author, feedUrl, artworkUrl, genre)
     companion object {
@@ -187,3 +191,12 @@ data class DownloadRow(
 
 /** Per-podcast library stats used to sort the Podcasts grid. */
 data class PodcastLibraryStat(val feedUrl: String, val latestEpisodeAt: Long?, val newEpisodes: Int)
+
+/** New episodes waiting to be added to the queue by the playback service (it owns the live queue). */
+@Entity(tableName = "auto_queue_pending")
+data class AutoQueuePending(@PrimaryKey val episodeId: String, val atStart: Boolean, val addedAt: Long = System.currentTimeMillis())
+
+/** Full-text index over episode titles and show notes (external content: kept in sync by Room triggers). */
+@Fts4(contentEntity = EpisodeEntity::class, tokenizer = FtsOptions.TOKENIZER_UNICODE61)
+@Entity(tableName = "episodes_fts")
+data class EpisodeFts(val title: String, val description: String)

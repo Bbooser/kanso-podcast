@@ -151,6 +151,7 @@ internal class PlayerConnection(private val context: Context) {
         scope.launch { repo.addBookmark(id, pos, "Marcador en ${formatTime(pos)}") }
     }
     fun toggle() { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
+    fun seekTo(ms: Long) { controller?.seekTo(ms.coerceAtLeast(0)) }
     fun seekBy(delta: Long) { controller?.let { it.seekTo((it.currentPosition + delta).coerceAtLeast(0)) } }
     fun skipBack() { controller?.seekBack() }
     fun skipForward() { controller?.seekForward() }
