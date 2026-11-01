@@ -2,6 +2,10 @@
 package com.kanso.podcast.ui
 
 import android.content.Context
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -71,7 +75,42 @@ internal class DiscoverViewModel(app: android.app.Application) : AndroidViewMode
     var error by mutableStateOf<String?>(null); private set
     private val cache = mutableMapOf<Int?, List<PodcastSearchResult>>()
     val subscribed = repo.podcastEntities.map { list -> list.map { it.feedUrl }.toSet() }.stateIn(this, emptySet())
-    init { loadTrending(null) }
+    private val store = com.kanso.podcast.data.RecommendationStore(app)
+    var forYou by mutableStateOf(store.load()); private set
+    var forYouState by mutableStateOf(ForYouState.Idle); private set
+    var refreshing by mutableStateOf(false); private set
+    init { loadTrending(null); loadForYou(force = false) }
+
+    /** Builds "Para ti" on-device. Only genre names and the country are sent to Apple; listening data never leaves the phone. */
+    fun loadForYou(force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!force && forYou.isNotEmpty() && !com.kanso.podcast.data.Recommender.isStale(store.fetchedAt(), now)) { forYouState = ForYouState.Ready; return }
+        if (force) refreshing = true
+        if (forYou.isEmpty()) forYouState = ForYouState.Loading
+        viewModelScope.launch {
+            val signals = repo.listeningSignals()
+            val genres = com.kanso.podcast.data.Recommender.topGenres(com.kanso.podcast.data.Recommender.profile(signals, now))
+            if (genres.isEmpty()) { forYouState = ForYouState.NoProfile; refreshing = false; return@launch }
+            val country = java.util.Locale.getDefault().country.lowercase().takeIf { it.length == 2 } ?: "mx"
+            val result = runCatching {
+                genres.flatMap { g ->
+                    val found = runCatching { directory.byGenre(g, country) }.getOrDefault(emptyList())
+                    found.mapIndexed { i, p -> com.kanso.podcast.data.Candidate(p, g, i, found.size) }
+                }.also { if (it.isEmpty()) error("sin candidatos") }
+            }
+            result.onSuccess { candidates ->
+                val ranked = com.kanso.podcast.data.Recommender.rank(candidates, signals, store.dismissed, now)
+                forYou = ranked; store.save(ranked, now)
+                forYouState = if (ranked.isEmpty()) ForYouState.Empty else ForYouState.Ready
+            }.onFailure { forYouState = if (forYou.isEmpty()) ForYouState.Offline else ForYouState.Stale }
+            refreshing = false
+        }
+    }
+    fun refresh() { cache.clear(); loadTrending(category); loadForYou(force = true) }
+    fun notInterested(r: com.kanso.podcast.data.Recommendation) {
+        store.dismiss(r.podcast); forYou = forYou - r; store.save(forYou, store.fetchedAt())
+        if (forYou.isEmpty()) forYouState = ForYouState.Empty
+    }
     fun loadTrending(genre: Int?) {
         category = genre; error = null
         cache[genre]?.let { trending = it; return }
@@ -90,10 +129,14 @@ internal class DiscoverViewModel(app: android.app.Application) : AndroidViewMode
     fun subscribe(p: PodcastSearchResult) = viewModelScope.launch { repo.subscribe(p) }
 }
 
+internal enum class ForYouState { Idle, Loading, Ready, Stale, Empty, NoProfile, Offline }
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun DiscoverScreen(onOpen: (PodcastSearchResult) -> Unit, modifier: Modifier, vm: DiscoverViewModel = viewModel()) {
     val subscribed by vm.subscribed.collectAsStateWithLifecycle()
     val results = vm.results
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = Kanso.screenPadding)) {
+    PullToRefreshBox(vm.refreshing, onRefresh = vm::refresh, modifier = modifier.fillMaxSize()) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = Kanso.screenPadding)) {
         item {
             OutlinedTextField(vm.query, { vm.query = it }, Modifier.fillMaxWidth().padding(horizontal = Kanso.screenPadding), singleLine = true,
                 placeholder = { Text("Buscar podcasts o añadir URL de RSS") }, leadingIcon = { Icon(Icons.Outlined.Search, null) },
@@ -108,6 +151,7 @@ internal class DiscoverViewModel(app: android.app.Application) : AndroidViewMode
             if (results.isEmpty()) item { Text("Sin resultados para “${vm.query}”.", Modifier.padding(Kanso.screenPadding), color = MaterialTheme.colorScheme.onSurface.copy(.55f)) }
             items(results, key = { "r:" + it.feedUrl }) { p -> DiscoverRow(p, p.feedUrl in subscribed, { onOpen(p) }, { vm.subscribe(p) }) }
         } else {
+            item { ForYouSection(vm, subscribed, onOpen) }
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = Kanso.screenPadding), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(CATEGORIES) { (label, id) -> FilterChip(vm.category == id, onClick = { vm.loadTrending(id) }, label = { Text(label) }, shape = RoundedCornerShape(50)) }
@@ -118,6 +162,51 @@ internal class DiscoverViewModel(app: android.app.Application) : AndroidViewMode
             }
             if (vm.loadingTrending) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Kanso.screenPadding), color = MaterialTheme.colorScheme.secondary) }
             itemsIndexed(vm.trending, key = { _, p -> "t:" + p.feedUrl }) { i, p -> DiscoverRow(p, p.feedUrl in subscribed, { onOpen(p) }, { vm.subscribe(p) }, rank = i + 1) }
+        }
+    }
+    }
+}
+
+@Composable private fun ForYouSection(vm: DiscoverViewModel, subscribed: Set<String>, onOpen: (PodcastSearchResult) -> Unit) {
+    val muted = MaterialTheme.colorScheme.onSurface.copy(.55f)
+    Column(Modifier.padding(bottom = Kanso.sectionGap)) {
+        Text("Para ti", Modifier.padding(horizontal = Kanso.screenPadding), style = MaterialTheme.typography.titleLarge)
+        Text("Calculado en tu teléfono a partir de lo que sigues y escuchas.", Modifier.padding(horizontal = Kanso.screenPadding), style = MaterialTheme.typography.bodySmall, color = muted)
+        Spacer(Modifier.height(8.dp))
+        val message = when (vm.forYouState) {
+            ForYouState.Loading, ForYouState.Idle -> null
+            ForYouState.NoProfile -> "Sigue algunos podcasts y aquí aparecerán recomendaciones."
+            ForYouState.Empty -> "Por ahora no hay nada nuevo para ti. Desliza hacia abajo para intentar de nuevo."
+            ForYouState.Offline -> "Sin conexión. Desliza hacia abajo para reintentar."
+            ForYouState.Stale -> "No pudimos actualizar; mostramos tus recomendaciones guardadas."
+            ForYouState.Ready -> null
+        }
+        if (vm.forYouState == ForYouState.Loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Kanso.screenPadding), color = MaterialTheme.colorScheme.secondary)
+        message?.let { Text(it, Modifier.padding(horizontal = Kanso.screenPadding).semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.bodyMedium, color = muted) }
+        if (vm.forYou.isNotEmpty()) LazyRow(contentPadding = PaddingValues(horizontal = Kanso.screenPadding), horizontalArrangement = Arrangement.spacedBy(Kanso.itemGap)) {
+            items(vm.forYou, key = { "y:" + it.podcast.feedUrl }) { r -> ForYouCard(r, r.podcast.feedUrl in subscribed, { onOpen(r.podcast) }, { vm.subscribe(r.podcast) }, { vm.notInterested(r) }) }
+        }
+    }
+}
+
+@Composable private fun ForYouCard(r: com.kanso.podcast.data.Recommendation, following: Boolean, onOpen: () -> Unit, onSubscribe: () -> Unit, onDismiss: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    Column(Modifier.width(148.dp).clip(RoundedCornerShape(12.dp)).clickable(onClickLabel = "Abrir ${r.podcast.title}", onClick = onOpen)) {
+        Box {
+            Artwork(r.podcast.artworkUrl, r.podcast.title, 148.dp, RoundedCornerShape(12.dp))
+            Box(Modifier.align(Alignment.TopEnd)) {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Opciones de ${r.podcast.title}", tint = Color.White) }
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(text = { Text(if (following) "Siguiendo" else "Seguir") }, enabled = !following, onClick = { menu = false; onSubscribe() }, leadingIcon = { Icon(Icons.Default.Add, null) })
+                    DropdownMenuItem(text = { Text("No me interesa") }, onClick = { menu = false; onDismiss() }, leadingIcon = { Icon(Icons.Outlined.VisibilityOff, null) })
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(r.podcast.title, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondary.copy(.12f)) {
+            Text(r.reason, Modifier.padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
