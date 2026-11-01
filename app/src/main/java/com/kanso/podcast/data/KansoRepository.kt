@@ -64,7 +64,10 @@ class KansoRepository private constructor(context: Context) {
         val fresh = io {
             val existing = dao.podcastList().map { Opml.dedupeKey(it.feedUrl) }.toSet()
             val fresh = doc.entries.filter { Opml.dedupeKey(it.feedUrl) !in existing }
-            dao.insertFolders(fresh.mapNotNull { it.folder?.trim()?.takeIf(String::isNotBlank) }.distinct().map(::FolderEntity))
+            dao.insertFolders((doc.folders + fresh.mapNotNull { it.folder }).mapNotNull { it.trim().takeIf(String::isNotBlank) }.distinct().map(::FolderEntity))
+            // Podcasts you already follow and that are not in a folder yet take the folder from the file.
+            val byKey = dao.podcastList().associateBy { Opml.dedupeKey(it.feedUrl) }
+            doc.entries.forEach { e -> val f = e.folder?.trim()?.takeIf(String::isNotBlank) ?: return@forEach; byKey[Opml.dedupeKey(e.feedUrl)]?.takeIf { it.folder == null }?.let { dao.setFolder(it.feedUrl, f) } }
             dao.insertPodcasts(fresh.map { PodcastEntity(it.feedUrl, it.feedUrl.hashCode().toString(), it.title, FeedParser.IMPORTED_AUTHOR, null, "Podcast", it.folder?.trim()?.takeIf(String::isNotBlank)) })
             fresh
         }
@@ -83,6 +86,8 @@ class KansoRepository private constructor(context: Context) {
     suspend fun folderLayout(): Pair<List<String>, Map<String, String?>> = io { dao.folderRows().map { it.name } to dao.podcastList().associate { it.feedUrl to it.folder } }
     suspend fun applyFolderLayout(folders: List<String>, assignments: Map<String, String?>) = io { dao.applyFolderLayout(folders, assignments) }
     suspend fun deleteFolder(name: String) = io { dao.deleteFolder(name) }
+    suspend fun setFolders(feeds: List<String>, folder: String?) = io { dao.setFolders(feeds, folder) }
+    suspend fun setFavorites(feeds: List<String>, value: Boolean) = io { dao.setFavorites(feeds, value) }
     suspend fun groupIntoFolder(name: String, feedUrls: List<String>) = io { dao.groupIntoFolder(name.trim(), feedUrls) }
     suspend fun setAutoDownloadCount(feedUrl: String, count: Int?) = io { dao.setAutoDownloadCount(feedUrl, count) }
 

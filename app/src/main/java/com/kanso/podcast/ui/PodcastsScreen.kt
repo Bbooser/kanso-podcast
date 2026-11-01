@@ -2,6 +2,14 @@
 package com.kanso.podcast.ui
 
 import com.kanso.podcast.data.planCategoryFolders
+import com.kanso.podcast.data.LibraryDrag
+import com.kanso.podcast.data.TileBounds
+import com.kanso.podcast.data.DropPlan
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
 import com.kanso.podcast.data.FolderPlan
 import com.kanso.podcast.data.suggestFolderName
 import com.kanso.podcast.data.libraryTiles
@@ -9,7 +17,6 @@ import com.kanso.podcast.data.LibraryTile
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.graphicsLayer
@@ -80,6 +87,8 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
     fun move(p: PodcastEntity, folder: String?) = viewModelScope.launch { repo.setFolder(p.feedUrl, folder) }
     fun createFolder(name: String) = viewModelScope.launch { if (name.isNotBlank()) repo.createFolder(name) }
     fun group(name: String, feeds: List<String>) = viewModelScope.launch { repo.groupIntoFolder(name, feeds) }
+    fun setFolders(feeds: List<String>, folder: String?) = viewModelScope.launch { repo.setFolders(feeds, folder) }
+    fun setFavorites(feeds: List<String>, value: Boolean) = viewModelScope.launch { repo.setFavorites(feeds, value) }
     fun renameFolder(from: String, to: String) = viewModelScope.launch { if (to.isNotBlank()) repo.renameFolder(from, to) }
     fun deleteFolder(name: String) = viewModelScope.launch { repo.deleteFolder(name) }
     /** Applies the plan and returns the previous layout for "Deshacer". */
@@ -129,13 +138,13 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
 }
 
 /** "Mover a carpeta…": the non-drag path (TalkBack friendly). */
-@Composable private fun MoveToFolderDialog(podcast: PodcastEntity, folders: List<String>, onDismiss: () -> Unit, onMove: (String) -> Unit) {
+@Composable private fun MoveToFolderDialog(current: String?, count: Int, folders: List<String>, onDismiss: () -> Unit, onMove: (String) -> Unit) {
     var creating by remember { mutableStateOf(false) }
     if (creating) { FolderNameDialog("Nueva carpeta", "", "Crear y mover", onDismiss) { onMove(it) }; return }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Mover a carpeta") },
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(if (count > 1) "Mover $count podcasts a carpeta" else "Mover a carpeta") },
         text = {
             LazyColumn {
-                items(folders.filter { it != podcast.folder }) { f ->
+                items(folders.filter { it != current }) { f ->
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onMove(f) }.padding(vertical = 12.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Folder, null, tint = MaterialTheme.colorScheme.secondary); Spacer(Modifier.width(12.dp)); Text(f)
                     }
@@ -182,29 +191,44 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
         text = { Text("Los podcasts de “$folder” regresan a tu biblioteca. No dejas de seguir ninguno.") },
         confirmButton = { TextButton(onClick = { vm.deleteFolder(folder); confirmDelete = false; onBack?.invoke() }) { Text("Eliminar") } },
         dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancelar") } })
-    moveTarget?.let { p -> MoveToFolderDialog(p, folders, { moveTarget = null }) { f -> vm.group(f, listOf(p.feedUrl)); moveTarget = null } }
+    moveTarget?.let { p -> MoveToFolderDialog(p.folder, 1, folders, { moveTarget = null }) { f -> vm.group(f, listOf(p.feedUrl)); moveTarget = null } }
 
     val tiles: List<LibraryTile> = remember(all, folders, stats, vm.sort, folder) {
         if (folder != null) sortPodcasts(all.filter { it.folder == folder }, stats, vm.sort).map { LibraryTile.Podcast(it) } else libraryTiles(all, folders, stats, vm.sort)
     }
-    // Drag & drop state: tile bounds in root coordinates, the dragged tile and the pointer position.
-    val bounds = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
-    var dragKey by remember { mutableStateOf<String?>(null) }
-    var dragDelta by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-    var dragStart by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-    val dropKey = dragKey?.let { k -> val pos = dragStart + dragDelta; bounds.entries.firstOrNull { it.key != k && it.value.contains(pos) }?.key }
-    fun drop(source: PodcastEntity) {
-        val target = tiles.firstOrNull { it.key == dropKey } ?: return
-        when (target) {
-            is LibraryTile.Folder -> vm.group(target.name, listOf(source.feedUrl))
-            is LibraryTile.Podcast -> { val name = suggestFolderName(source, target.podcast, folders); vm.group(name, listOf(target.podcast.feedUrl, source.feedUrl)); renameTarget = name }
+    // Multi-select: feed URLs of the selected podcasts (null = not selecting).
+    var selection by remember(folder) { mutableStateOf<Set<String>?>(null) }
+    androidx.activity.compose.BackHandler(enabled = selection != null) { selection = null }
+    val visiblePodcasts = tiles.filterIsInstance<LibraryTile.Podcast>().map { it.podcast }
+    val selected = visiblePodcasts.filter { selection?.contains(it.feedUrl) == true }
+    var bulkMove by remember { mutableStateOf<List<String>?>(null) }
+    bulkMove?.let { feeds -> MoveToFolderDialog(all.filter { it.feedUrl in feeds }.map { it.folder }.distinct().singleOrNull(), feeds.size, folders, { bulkMove = null }) { f ->
+        vm.group(f, feeds); bulkMove = null; selection = null; scope.launch { snackbar.showSnackbar("${feeds.size} podcasts en “$f”") }
+    } }
+    // Drag & drop: tile bounds (root coordinates, kept fresh by onGloballyPositioned) and the drag in progress.
+    val bounds = remember { mutableStateMapOf<String, TileBounds>() }
+    var drag by remember { mutableStateOf<TileDrag?>(null) }
+    var menuKey by remember { mutableStateOf<String?>(null) }
+    val dropKey = drag?.let { d -> LibraryDrag.hitTest(d.pointer.x, d.pointer.y, bounds, d.feeds.toSet()) }
+    fun applyDrop(d: TileDrag, target: String?) {
+        val plan = LibraryDrag.resolve(tiles.firstOrNull { it.key == target }, d.feeds.mapNotNull { f -> all.firstOrNull { it.feedUrl == f } }, folders)
+        when (plan) {
+            is DropPlan.IntoFolder -> { vm.group(plan.name, plan.feeds); scope.launch { snackbar.showSnackbar(if (plan.feeds.size > 1) "${plan.feeds.size} podcasts en “${plan.name}”" else "Movido a “${plan.name}”") } }
+            is DropPlan.NewFolder -> { vm.group(plan.name, plan.feeds); renameTarget = plan.name }
+            DropPlan.None -> return
         }
+        selection = null
     }
 
     Box(modifier.fillMaxSize()) {
     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).zIndex(2f))
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = if (onBack != null) 4.dp else Kanso.screenPadding, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (selection != null) SelectionBar(selected, visiblePodcasts.size, onClose = { selection = null },
+            onSelectAll = { selection = if (selected.size == visiblePodcasts.size) emptySet() else visiblePodcasts.map { it.feedUrl }.toSet() },
+            onFavorite = { vm.setFavorites(selected.map { it.feedUrl }, LibraryDrag.favoriteValue(selected)) },
+            onMove = { bulkMove = selected.map { it.feedUrl } },
+            onLeaveFolder = { vm.setFolders(selected.map { it.feedUrl }, null); selection = null })
+        else Row(Modifier.fillMaxWidth().padding(start = if (onBack != null) 4.dp else Kanso.screenPadding, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
             Text(folder ?: "Podcasts", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (folder == null) IconButton(onClick = { create = true }) { Icon(Icons.Outlined.CreateNewFolder, "Nueva carpeta", tint = MaterialTheme.colorScheme.secondary) }
@@ -236,6 +260,7 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
                     }
                     Spacer(Modifier.height(6.dp))
                     HorizontalDivider()
+                    DropdownMenuItem({ Text("Seleccionar") }, onClick = { menu = false; selection = emptySet() }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) })
                     if (folder == null) DropdownMenuItem({ Text("Organizar por categoría") }, onClick = { menu = false; organizing = true }, leadingIcon = { Icon(Icons.Outlined.Category, null) })
                     DropdownMenuItem({ Text("Actualizar todos los feeds") }, onClick = { menu = false; vm.refreshAll() }, leadingIcon = { Icon(Icons.Outlined.Sync, null) })
                 }
@@ -245,30 +270,115 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
         if (folder != null && loaded && tiles.isEmpty()) { EmptyState(Icons.Outlined.Folder, "Carpeta vacía", "Mantén presionado un podcast y suéltalo sobre esta carpeta, o usa “Mover a carpeta…”."); return@Column }
         val dense = vm.columns >= 4
         val gap = if (vm.columns == 5) 6.dp else if (dense) 8.dp else 10.dp
-        LazyVerticalGrid(if (vm.columns in 2..5) GridCells.Fixed(vm.columns) else GridCells.Adaptive(104.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(Kanso.screenPadding - 4.dp), horizontalArrangement = Arrangement.spacedBy(gap), verticalArrangement = Arrangement.spacedBy(gap)) {
+        val gridState = rememberLazyGridState()
+        val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        var area by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+        // The gesture lives on the container (not the tile) so scrolling or recycling the dragged item never cancels it.
+        val currentTiles by rememberUpdatedState(tiles)
+        val currentSelection by rememberUpdatedState(selection)
+        val canDrag = folder == null
+        // Auto-scroll while the finger is near the top or bottom edge.
+        LaunchedEffect(drag != null) {
+            while (drag != null) {
+                val d = drag ?: break
+                val speed = with(density) { LibraryDrag.autoScroll(d.pointer.y - area.top, area.height, 72.dp.toPx(), 18.dp.toPx()) }
+                if (speed != 0f) gridState.scrollBy(speed)
+                androidx.compose.runtime.withFrameNanos { }
+            }
+        }
+        Box(Modifier.fillMaxSize().onGloballyPositioned { area = it.boundsInRoot() }.pointerInput(canDrag) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val origin = area.topLeft
+                val start = origin + down.position
+                val key = LibraryDrag.hitTest(start.x, start.y, bounds, emptySet()) ?: return@awaitEachGesture
+                if (currentTiles.firstOrNull { it.key == key } !is LibraryTile.Podcast) return@awaitEachGesture
+                // Own long-press wait (Initial pass): the tile's clickable consumes the down, which some helpers treat as cancelled.
+                var cancelled = false
+                val timedOut = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                    while (true) {
+                        val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                        val c = ev.changes.firstOrNull { it.id == down.id }
+                        if (c == null || !c.pressed || (c.position - down.position).getDistance() > viewConfiguration.touchSlop) { cancelled = true; break }
+                    }
+                } == null
+                if (cancelled || !timedOut) return@awaitEachGesture
+                val long = down
+                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                val tile = bounds[key] ?: return@awaitEachGesture
+                val order = currentTiles.map { it.key }
+                val d0 = TileDrag(key, LibraryDrag.draggedFeeds(key, currentSelection, order), start, start - androidx.compose.ui.geometry.Offset(tile.left, tile.top), tile.right - tile.left, tile.bottom - tile.top)
+                if (canDrag) drag = d0
+                var travelled = 0f
+                var pointer = start
+                while (true) {
+                    val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == long.id } ?: break
+                    if (!change.pressed) { change.consume(); break }
+                    val delta = change.position - change.previousPosition
+                    travelled += delta.getDistance(); pointer += delta; change.consume()
+                    if (canDrag) drag = drag?.copy(pointer = pointer)
+                }
+                val finished = drag; drag = null
+                if (finished == null || travelled < viewConfiguration.touchSlop) menuKey = key // released in place: the menu
+                else applyDrop(finished, LibraryDrag.hitTest(pointer.x, pointer.y, bounds, finished.feeds.toSet()))
+            }
+        }) {
+        LazyVerticalGrid(if (vm.columns in 2..5) GridCells.Fixed(vm.columns) else GridCells.Adaptive(104.dp), Modifier.fillMaxSize(), state = gridState, contentPadding = PaddingValues(Kanso.screenPadding - 4.dp), horizontalArrangement = Arrangement.spacedBy(gap), verticalArrangement = Arrangement.spacedBy(gap)) {
             items(tiles, key = { it.key }) { tile ->
-                val tracked = Modifier.onGloballyPositioned { bounds[tile.key] = it.boundsInRoot() }
-                    .then(if (dropKey == tile.key) Modifier.border(2.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(14.dp)) else Modifier)
+                DisposableEffect(tile.key) { onDispose { bounds.remove(tile.key) } }
+                val lifted = drag?.feeds?.contains(tile.key) == true
+                val tracked = Modifier.onGloballyPositioned { val r = it.boundsInRoot(); bounds[tile.key] = TileBounds(r.left, r.top, r.right, r.bottom) }
+                    .then(if (dropKey == tile.key) Modifier.border(3.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(14.dp)).graphicsLayer { scaleX = 1.05f; scaleY = 1.05f } else Modifier)
+                    .graphicsLayer { alpha = if (lifted) .3f else 1f }
                 when (tile) {
-                    is LibraryTile.Folder -> FolderTile(tile, tracked, vm.columns == 5) { onOpenFolder(tile.name) }
+                    is LibraryTile.Folder -> FolderTile(tile, tracked, vm.columns == 5) { if (selection == null) onOpenFolder(tile.name) }
                     is LibraryTile.Podcast -> {
                         val p = tile.podcast
-                        val dragging = dragKey == tile.key
-                        PodcastTile(p, stats[p.feedUrl]?.newEpisodes ?: 0, vm.columns == 5, tracked.zIndex(if (dragging) 1f else 0f).graphicsLayer {
-                                if (dragging) { translationX = dragDelta.x; translationY = dragDelta.y; scaleX = 1.08f; scaleY = 1.08f; alpha = .9f }
-                            },
-                            draggable = folder == null,
-                            onDragStart = { local -> dragKey = tile.key; dragDelta = androidx.compose.ui.geometry.Offset.Zero; dragStart = (bounds[tile.key]?.topLeft ?: androidx.compose.ui.geometry.Offset.Zero) + local },
-                            onDrag = { dragDelta += it },
-                            onDragEnd = { moved -> if (moved) drop(p); dragKey = null; dragDelta = androidx.compose.ui.geometry.Offset.Zero; !moved },
-                            onOpen = { onOpen(p.toModel()) }, onRemove = { vm.unsubscribe(p) }, onMoveToFolder = { moveTarget = p },
+                        PodcastTile(p, stats[p.feedUrl]?.newEpisodes ?: 0, vm.columns == 5, tracked, selected = selection?.contains(p.feedUrl),
+                            menuOpen = menuKey == p.feedUrl, onMenuChange = { menuKey = if (it) p.feedUrl else null },
+                            onTap = { val sel = selection; if (sel != null) selection = if (p.feedUrl in sel) sel - p.feedUrl else sel + p.feedUrl else onOpen(p.toModel()) },
+                            onSelect = { selection = (selection ?: emptySet()) + p.feedUrl },
+                            onRemove = { vm.unsubscribe(p) }, onMoveToFolder = { moveTarget = p },
                             onLeaveFolder = if (p.folder != null) ({ vm.move(p, null) }) else null, onFavorite = { vm.toggleFavorite(p) })
                     }
                 }
             }
         }
+        // The lifted tile follows the finger above everything else.
+        drag?.let { d ->
+            val first = all.firstOrNull { it.feedUrl == d.feeds.first() }
+            val x = d.pointer.x - d.grab.x - area.left; val y = d.pointer.y - d.grab.y - area.top
+            Box(Modifier.offset { androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()) }.size(with(density) { d.width.toDp() }, with(density) { d.height.toDp() })
+                .zIndex(10f).graphicsLayer { scaleX = 1.1f; scaleY = 1.1f; shadowElevation = 16f; shape = RoundedCornerShape(14.dp); clip = true }.background(MaterialTheme.colorScheme.surfaceVariant)) {
+                if (d.feeds.size > 1) Box(Modifier.matchParentSize().offset(6.dp, 6.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.secondary.copy(.35f)))
+                first?.artworkUrl?.let { AsyncImage(it, null, Modifier.fillMaxSize()) } ?: Text(first?.title.orEmpty(), Modifier.align(Alignment.Center).padding(6.dp), style = MaterialTheme.typography.labelSmall, maxLines = 3)
+                if (d.feeds.size > 1) Surface(Modifier.align(Alignment.TopEnd).padding(4.dp), shape = CircleShape, color = MaterialTheme.colorScheme.secondary) {
+                    Text("${d.feeds.size}", Modifier.padding(horizontal = 7.dp, vertical = 2.dp), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+        }
     }
 }
+}
+
+/** A drag in progress, in root coordinates: [grab] is where the finger holds the tile. */
+private data class TileDrag(val key: String, val feeds: List<String>, val pointer: androidx.compose.ui.geometry.Offset, val grab: androidx.compose.ui.geometry.Offset, val width: Float, val height: Float)
+
+/** Top bar while selecting podcasts. */
+@Composable private fun SelectionBar(selected: List<PodcastEntity>, total: Int, onClose: () -> Unit, onSelectAll: () -> Unit, onFavorite: () -> Unit, onMove: () -> Unit, onLeaveFolder: () -> Unit) {
+    val any = selected.isNotEmpty()
+    Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Salir de la selección") }
+        Text(if (any) "${selected.size} seleccionados" else "Selecciona podcasts", Modifier.weight(1f).semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite },
+            style = MaterialTheme.typography.titleMedium, maxLines = 1)
+        TextButton(onClick = onSelectAll) { Text(if (any && selected.size == total) "Ninguno" else "Seleccionar todo") }
+        IconButton(onClick = onFavorite, enabled = any) { Icon(if (any && selected.all { it.isFavorite }) Icons.Default.Star else Icons.Outlined.StarBorder, if (any && selected.all { it.isFavorite }) "Quitar de favoritos" else "Marcar como favoritos") }
+        IconButton(onClick = onMove, enabled = any) { Icon(Icons.Outlined.DriveFileMove, "Mover a carpeta…") }
+        IconButton(onClick = onLeaveFolder, enabled = selected.any { it.folder != null }) { Icon(Icons.Outlined.FolderOff, "Quitar de carpeta") }
+    }
 }
 
 @Composable private fun NewBadge(count: Int, modifier: Modifier, tiny: Boolean = false) {
@@ -294,38 +404,35 @@ internal class PodcastsViewModel(app: android.app.Application) : AndroidViewMode
     }
 }
 
-/** Tap opens; long-press without moving opens the menu; long-press and drag moves it onto another tile (root only). */
-@Composable private fun PodcastTile(podcast: PodcastEntity, newEpisodes: Int, tiny: Boolean, modifier: Modifier, draggable: Boolean, onDragStart: (androidx.compose.ui.geometry.Offset) -> Unit, onDrag: (androidx.compose.ui.geometry.Offset) -> Unit,
-                                    onDragEnd: (moved: Boolean) -> Boolean, onOpen: () -> Unit, onRemove: () -> Unit, onMoveToFolder: () -> Unit, onLeaveFolder: (() -> Unit)?, onFavorite: () -> Unit) {
-    var menu by remember { mutableStateOf(false) }
-    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+/**
+ * Tap opens (or toggles while selecting). Long-press is handled by the grid: drag to a folder/podcast, or release in place for the menu.
+ * TalkBack gets the menu through the long-click action and "Mover a carpeta…".
+ */
+@Composable private fun PodcastTile(podcast: PodcastEntity, newEpisodes: Int, tiny: Boolean, modifier: Modifier, selected: Boolean?, menuOpen: Boolean, onMenuChange: (Boolean) -> Unit,
+                                    onTap: () -> Unit, onSelect: () -> Unit, onRemove: () -> Unit, onMoveToFolder: () -> Unit, onLeaveFolder: (() -> Unit)?, onFavorite: () -> Unit) {
+    val menu = menuOpen
     Box(modifier) {
         Box(Modifier.aspectRatio(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
-            .pointerInput(podcast.feedUrl, draggable) {
-                var travelled = 0f
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); travelled = 0f; if (draggable) onDragStart(it) },
-                    onDrag = { change, amount -> change.consume(); travelled += amount.getDistance(); if (draggable) onDrag(amount) },
-                    onDragEnd = { val moved = travelled > 24.dp.toPx(); if (if (draggable) onDragEnd(moved) else true) { if (!moved) menu = true } },
-                    onDragCancel = { if (draggable) onDragEnd(false) })
-            }
-            .clickable(onClick = onOpen)
-            .semantics { onLongClick("Opciones") { menu = true; true } },
+            .then(if (selected == true) Modifier.border(3.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(14.dp)) else Modifier)
+            .clickable(onClickLabel = if (selected != null) (if (selected) "Quitar de la selección" else "Seleccionar") else "Abrir", onClick = onTap)
+            .semantics { onLongClick("Opciones") { onMenuChange(true); true }; if (selected != null) this.selected = selected },
             contentAlignment = Alignment.Center) {
             if (podcast.artworkUrl != null) AsyncImage(podcast.artworkUrl, podcast.title, Modifier.fillMaxSize())
             else Text(podcast.title, Modifier.padding(if (tiny) 3.dp else 8.dp), style = if (tiny) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = if (tiny) 3 else 4, overflow = TextOverflow.Ellipsis)
+            if (selected == true) Icon(Icons.Default.CheckCircle, null, Modifier.align(Alignment.BottomEnd).padding(4.dp).size(if (tiny) 14.dp else 20.dp).background(MaterialTheme.colorScheme.background, CircleShape), tint = MaterialTheme.colorScheme.secondary)
         }
         if (podcast.isFavorite) Surface(Modifier.align(Alignment.TopStart).padding(if (tiny) 3.dp else 6.dp), shape = CircleShape, color = MaterialTheme.colorScheme.background.copy(.85f)) {
             Icon(Icons.Default.Star, "Favorito", Modifier.padding(if (tiny) 1.dp else 3.dp).size(if (tiny) 10.dp else 14.dp), tint = MaterialTheme.colorScheme.secondary)
         }
         NewBadge(newEpisodes, Modifier.align(Alignment.TopEnd).padding(if (tiny) 2.dp else 4.dp), tiny)
-        DropdownMenu(menu, { menu = false }) {
+        DropdownMenu(menu, { onMenuChange(false) }) {
             Text(podcast.title, Modifier.padding(horizontal = 16.dp, vertical = 6.dp).widthIn(max = 240.dp), style = MaterialTheme.typography.labelLarge, maxLines = 2)
-            DropdownMenuItem({ Text(if (podcast.isFavorite) "Quitar de favoritos" else "Marcar como favorito") }, onClick = { menu = false; onFavorite() },
+            DropdownMenuItem({ Text(if (podcast.isFavorite) "Quitar de favoritos" else "Marcar como favorito") }, onClick = { onMenuChange(false); onFavorite() },
                 leadingIcon = { Icon(if (podcast.isFavorite) Icons.Default.Star else Icons.Outlined.StarBorder, null) })
-            DropdownMenuItem({ Text("Mover a carpeta…") }, onClick = { menu = false; onMoveToFolder() }, leadingIcon = { Icon(Icons.Outlined.DriveFileMove, null) })
-            if (onLeaveFolder != null) DropdownMenuItem({ Text("Quitar de la carpeta") }, onClick = { menu = false; onLeaveFolder() }, leadingIcon = { Icon(Icons.Outlined.FolderOff, null) })
-            DropdownMenuItem({ Text("Dejar de seguir") }, onClick = { menu = false; onRemove() }, leadingIcon = { Icon(Icons.Outlined.Delete, null) })
+            if (selected == null) DropdownMenuItem({ Text("Seleccionar") }, onClick = { onMenuChange(false); onSelect() }, leadingIcon = { Icon(Icons.Outlined.Checklist, null) })
+            DropdownMenuItem({ Text("Mover a carpeta…") }, onClick = { onMenuChange(false); onMoveToFolder() }, leadingIcon = { Icon(Icons.Outlined.DriveFileMove, null) })
+            if (onLeaveFolder != null) DropdownMenuItem({ Text("Quitar de la carpeta") }, onClick = { onMenuChange(false); onLeaveFolder() }, leadingIcon = { Icon(Icons.Outlined.FolderOff, null) })
+            DropdownMenuItem({ Text("Dejar de seguir") }, onClick = { onMenuChange(false); onRemove() }, leadingIcon = { Icon(Icons.Outlined.Delete, null) })
         }
     }
 }

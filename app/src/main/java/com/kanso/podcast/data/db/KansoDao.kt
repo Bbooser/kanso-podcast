@@ -48,6 +48,8 @@ interface KansoDao {
     @Transaction suspend fun applyFolderLayout(folders: List<String>, assignments: Map<String, String?>) {
         deleteAllFolders(); insertFolders(folders.map(::FolderEntity)); assignments.forEach { (feed, folder) -> setFolder(feed, folder) }
     }
+    @Query("UPDATE podcasts SET folder = :folder WHERE feedUrl IN (:feeds)") suspend fun setFolders(feeds: List<String>, folder: String?)
+    @Query("UPDATE podcasts SET isFavorite = :value WHERE feedUrl IN (:feeds)") suspend fun setFavorites(feeds: List<String>, value: Boolean)
     @Transaction suspend fun groupIntoFolder(name: String, feedUrls: List<String>) { insertFolders(listOf(FolderEntity(name))); feedUrls.forEach { setFolder(it, name) } }
 
     // Episodes

@@ -53,6 +53,7 @@ internal class SettingsViewModel(app: android.app.Application) : AndroidViewMode
     private val repo = KansoRepository.get(app)
     val podcasts = repo.podcasts.stateIn(this, emptyList())
     val entities = repo.podcastEntities.stateIn(this, emptyList())
+    val folders = repo.folders.stateIn(this, emptyList())
 }
 
 @Composable internal fun SettingsScreen(dark: Boolean, palette: KansoPalette, onDarkChange: (Boolean) -> Unit, onPaletteChange: (KansoPalette) -> Unit, modifier: Modifier, onBack: (() -> Unit)? = null, vm: SettingsViewModel = viewModel()) {
@@ -63,9 +64,10 @@ internal class SettingsViewModel(app: android.app.Application) : AndroidViewMode
     var refreshMessage by remember { mutableStateOf<String?>(null) }
     val importer: ImportViewModel = viewModel()
     val entities by vm.entities.collectAsStateWithLifecycle()
+    val folderNames by vm.folders.collectAsStateWithLifecycle()
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(importer::import) }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-opml")) { uri -> uri?.let {
-        runCatching { context.contentResolver.openOutputStream(it)!!.bufferedWriter().use { w -> w.write(Opml.export(entities.map { p -> com.kanso.podcast.data.OpmlEntry(p.feedUrl, p.title, p.folder) })) } }
+        runCatching { context.contentResolver.openOutputStream(it)!!.bufferedWriter().use { w -> w.write(Opml.export(entities.map { p -> com.kanso.podcast.data.OpmlEntry(p.feedUrl, p.title, p.folder) }, folders = folderNames)) } }
             .onSuccess { transferMessage = "Biblioteca exportada (${entities.size} podcasts)" }.onFailure { transferMessage = "No se pudo exportar" }
     } }
     var count by remember { mutableIntStateOf(prefs.getInt("download_count", 0)) }; var days by remember { mutableIntStateOf(prefs.getInt("delete_days", 7)) }
@@ -122,10 +124,10 @@ internal class SettingsViewModel(app: android.app.Application) : AndroidViewMode
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(onClick = { importLauncher.launch(arrayOf("*/*")) }, Modifier.weight(1f)) { Icon(Icons.Outlined.FileOpen, null); Spacer(Modifier.width(6.dp)); Text("Importar") }
-                OutlinedButton(onClick = { exportLauncher.launch("kanso-podcasts.opml") }, Modifier.weight(1f), enabled = subscriptions.isNotEmpty()) { Icon(Icons.Outlined.FileUpload, null); Spacer(Modifier.width(6.dp)); Text("Exportar") }
+                OutlinedButton(onClick = { exportLauncher.launch("kanso-podcasts.opml") }, Modifier.weight(1f), enabled = subscriptions.isNotEmpty()) { Icon(Icons.Outlined.FileUpload, null); Spacer(Modifier.width(6.dp)); Text("Exportar con carpetas") }
             }
         }
-        item { Text("Importa el OPML exportado desde Pocket Casts, AntennaPod, Podcast Addict, Overcast o Apple Podcasts (se conservan las carpetas), o el respaldo de base de datos de AntennaPod para traer también lo escuchado, el progreso y los favoritos. También puedes compartir el archivo directo a Kanso.", style = MaterialTheme.typography.bodySmall, color = muted) }
+        item { Text("“Exportar con carpetas” crea un OPML con tus podcasts y sus carpetas (incluidas las vacías). Importa el OPML exportado desde Pocket Casts, AntennaPod, Podcast Addict, Overcast o Apple Podcasts (se conservan las carpetas), o el respaldo de base de datos de AntennaPod para traer también lo escuchado, el progreso y los favoritos. También puedes compartir el archivo directo a Kanso.", style = MaterialTheme.typography.bodySmall, color = muted) }
         transferMessage?.let { item { Text(it, color = MaterialTheme.colorScheme.secondary) } }
         item { SectionLabel("Respaldo") }
         item {
